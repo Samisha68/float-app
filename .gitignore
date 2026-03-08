@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Expo (app)
+.expo/
+web-build/
+
+# React Native / EAS — native build artifacts (rebuilt by EAS or locally)
+app/ios/
+app/android/
+
+# Rust / Anchor (program)
+program/target/
+
+# Environment and secrets (never commit)
+.env
+.env.local
+.env.*.local
+*.pem
+**/id.json
+.keypair
+
+# IDE and editor (local state; may contain paths/settings)
+.cursor/
+.claude/
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and debug
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Optional: lockfile preference — uncomment if you want to ignore one
+# package-lock.json
+# yarn.lock

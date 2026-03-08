@@ -1,0 +1,45 @@
+{
+  "expo": {
+    "name": "Float",
+    "slug": "float-loans",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0A0A0F"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0A0A0F"
+      },
+      "package": "com.floatloans",
+      "intentFilters": [
+        {
+          "action": "android.intent.action.VIEW",
+          "category": [
+            "android.intent.category.DEFAULT",
+            "android.intent.category.BROWSABLE"
+          ],
+          "data": {
+            "scheme": "float"
+          }
+        }
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.floatloans",
+      "supportsTablet": false
+    },
+    "plugins": [],
+    "extra": {
+      "eas": {
+        "projectId": "5e0597ed-5f3b-41e4-ab44-e2cea74c58fe"
+      }
+    },
+    "owner": "samisha68"
+  }
+}

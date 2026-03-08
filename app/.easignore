@@ -1,0 +1,24 @@
+# Let EAS install dependencies server-side — don't upload node_modules
+node_modules/
+
+# iOS build artifacts
+ios/
+
+# Android build artifacts  
+android/
+
+# Local env files
+.env
+.env.local
+.env*.local
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
