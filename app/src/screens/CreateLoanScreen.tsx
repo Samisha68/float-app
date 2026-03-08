@@ -8,8 +8,10 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Platform,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
 import {
   Connection,
   PublicKey,
@@ -37,6 +39,7 @@ import {
   type InstallmentOption,
 } from "../utils/constants";
 import { IDL } from "../idl/float";
+import { colors, radius, typography, spacing } from "../theme/theme";
 
 interface Props {
   navigation: any;
@@ -48,7 +51,6 @@ export function CreateLoanScreen({ navigation }: Props) {
   const [selectedTerm, setSelectedTerm] = useState<InstallmentOption>(6);
   const [submitting, setSubmitting] = useState(false);
 
-  // Derived values
   const loanAmountNum = parseFloat(loanAmount) || 0;
   const collateralRequired = minCollateral(loanAmountNum);
   const { emi, totalInterest, totalRepayable } = useMemo(
@@ -64,15 +66,12 @@ export function CreateLoanScreen({ navigation }: Props) {
 
     try {
       const connection = new Connection(DEVNET_RPC, "confirmed");
-
-      // Scale to 6-decimal lamports
       const loanLamports = new anchor.BN(Math.floor(loanAmountNum * 1e6));
       const collateralLamports = new anchor.BN(Math.floor(collateralRequired * 1e6));
       const installments = selectedTerm;
       const annualRateBps = new anchor.BN(DEFAULT_APR_BPS);
 
       await signAndSend(async (walletPubkey) => {
-        // Derive PDAs using confirmed pubkey from reauth
         const [loanPda] = PublicKey.findProgramAddressSync(
           [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer()],
           FLOAT_PROGRAM_ID
@@ -93,15 +92,13 @@ export function CreateLoanScreen({ navigation }: Props) {
         );
         const program = new anchor.Program(IDL as unknown as anchor.Idl, FLOAT_PROGRAM_ID, provider);
 
-        // 1. Create vault collateral ATA (owner = loan PDA) — idempotent: no-op if it exists
         const createVaultAtaIx = createAssociatedTokenAccountIdempotentInstruction(
-          walletPubkey,        // payer
-          vaultCollateralAta,  // ATA address
-          loanPda,             // owner (loan PDA)
-          USDC_MINT,           // mint
+          walletPubkey,
+          vaultCollateralAta,
+          loanPda,
+          USDC_MINT,
         );
 
-        // 2. Build the initializeLoan instruction
         const initLoanTx = await program.methods
           .initializeLoan(collateralLamports, loanLamports, installments, annualRateBps)
           .accounts({
@@ -121,7 +118,6 @@ export function CreateLoanScreen({ navigation }: Props) {
           })
           .transaction();
 
-        // 3. Combine: create vault ATA first, then initialize loan
         const tx = new Transaction();
         tx.add(createVaultAtaIx);
         tx.add(...initLoanTx.instructions);
@@ -143,16 +139,15 @@ export function CreateLoanScreen({ navigation }: Props) {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        {/* Header */}
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
           <Text style={styles.backText}>← Back</Text>
         </TouchableOpacity>
+
         <Text style={styles.title}>New Loan</Text>
         <Text style={styles.subtitle}>Lock collateral · Receive USDC · Repay in EMIs</Text>
 
-        {/* Loan amount input */}
         <Text style={styles.inputLabel}>Loan Amount (USDC)</Text>
         <TextInput
           style={styles.input}
@@ -160,10 +155,9 @@ export function CreateLoanScreen({ navigation }: Props) {
           onChangeText={setLoanAmount}
           keyboardType="decimal-pad"
           placeholder="100"
-          placeholderTextColor="#334155"
+          placeholderTextColor={colors.textMuted}
         />
 
-        {/* Collateral required */}
         {loanAmountNum > 0 && (
           <View style={styles.infoBox}>
             <Text style={styles.infoLabel}>Collateral Required (150% LTV)</Text>
@@ -171,7 +165,6 @@ export function CreateLoanScreen({ navigation }: Props) {
           </View>
         )}
 
-        {/* Term selector */}
         <Text style={styles.inputLabel}>Loan Term</Text>
         <View style={styles.termRow}>
           {INSTALLMENT_OPTIONS.map((term) => (
@@ -179,17 +172,15 @@ export function CreateLoanScreen({ navigation }: Props) {
               key={term}
               style={[styles.termBtn, selectedTerm === term && styles.termBtnActive]}
               onPress={() => setSelectedTerm(term)}
+              activeOpacity={0.8}
             >
-              <Text
-                style={[styles.termText, selectedTerm === term && styles.termTextActive]}
-              >
+              <Text style={[styles.termText, selectedTerm === term && styles.termTextActive]}>
                 {term}mo
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        {/* EMI preview */}
         {loanAmountNum > 0 && (
           <View style={styles.emiCard}>
             <Text style={styles.emiCardTitle}>Repayment Summary</Text>
@@ -207,23 +198,29 @@ export function CreateLoanScreen({ navigation }: Props) {
             </View>
             <View style={styles.divider} />
             <Text style={styles.emiNote}>
-              Collateral is returned after all {selectedTerm} payments.
-              Miss 7+ days → liquidation risk.
+              Collateral is returned after all {selectedTerm} payments. Miss 7+ days → liquidation risk.
             </Text>
           </View>
         )}
 
-        {/* Submit */}
         <TouchableOpacity
-          style={[styles.submitBtn, (!isValid || submitting) && styles.submitBtnDisabled]}
           onPress={handleCreateLoan}
           disabled={!isValid || submitting || !publicKey}
+          activeOpacity={0.9}
+          style={styles.submitBtnWrapper}
         >
-          {submitting ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={styles.submitBtnText}>Confirm Loan →</Text>
-          )}
+          <LinearGradient
+            colors={(!isValid || submitting) ? ["#374151", "#374151"] : [colors.primary, colors.primaryDark]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.submitBtn, (!isValid || submitting) && styles.submitBtnDisabled]}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <Text style={styles.submitBtnText}>Confirm Loan →</Text>
+            )}
+          </LinearGradient>
         </TouchableOpacity>
 
         {!publicKey && (
@@ -235,72 +232,72 @@ export function CreateLoanScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0A0A0F" },
-  scroll: { padding: 20, paddingBottom: 60 },
-  backBtn: { marginBottom: 16 },
-  backText: { color: "#6366F1", fontSize: 15, fontWeight: "600" },
-  title: { fontSize: 32, fontWeight: "900", color: "#F1F5F9", marginBottom: 8 },
-  subtitle: { fontSize: 14, color: "#64748B", marginBottom: 28, lineHeight: 20 },
-  inputLabel: { color: "#94A3B8", fontSize: 13, fontWeight: "600", marginBottom: 8, letterSpacing: 0.5 },
+  container: { flex: 1, backgroundColor: colors.bg },
+  scroll: { padding: spacing.xl, paddingBottom: 72 },
+  backBtn: { marginBottom: spacing.lg },
+  backText: { color: colors.primaryLight, fontSize: 16, fontWeight: "600" },
+  title: { ...typography.h1, color: colors.text, marginBottom: spacing.sm },
+  subtitle: { color: colors.textMuted, fontSize: 15, marginBottom: spacing.xxl, lineHeight: 22 },
+  inputLabel: { ...typography.label, color: colors.textSecondary, marginBottom: spacing.sm },
   input: {
-    backgroundColor: "#13131A",
+    backgroundColor: colors.bgInput,
     borderWidth: 1,
-    borderColor: "#1E1E2E",
-    borderRadius: 12,
-    color: "#F1F5F9",
-    fontSize: 20,
+    borderColor: colors.surfaceBorder,
+    borderRadius: radius.md,
+    color: colors.text,
+    fontSize: 22,
     fontWeight: "700",
-    padding: 16,
-    marginBottom: 16,
+    padding: spacing.xl,
+    marginBottom: spacing.lg,
   },
   infoBox: {
-    backgroundColor: "#13131A",
-    borderRadius: 12,
-    padding: 14,
+    backgroundColor: colors.primaryMuted,
+    borderRadius: radius.md,
+    padding: spacing.lg,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 24,
+    marginBottom: spacing.xxl,
     borderWidth: 1,
-    borderColor: "#6366F122",
+    borderColor: "rgba(99, 102, 241, 0.25)",
   },
-  infoLabel: { color: "#64748B", fontSize: 13 },
-  infoValue: { color: "#A5B4FC", fontSize: 16, fontWeight: "700" },
-  termRow: { flexDirection: "row", gap: 10, marginBottom: 24 },
+  infoLabel: { color: colors.textMuted, fontSize: 14 },
+  infoValue: { color: colors.primaryLight, fontSize: 17, fontWeight: "700" },
+  termRow: { flexDirection: "row", gap: spacing.md, marginBottom: spacing.xxl },
   termBtn: {
     flex: 1,
-    paddingVertical: 14,
-    borderRadius: 12,
+    paddingVertical: 16,
+    borderRadius: radius.md,
     alignItems: "center",
-    backgroundColor: "#13131A",
+    backgroundColor: colors.bgCard,
     borderWidth: 1,
-    borderColor: "#1E1E2E",
+    borderColor: colors.surfaceBorder,
   },
-  termBtnActive: { backgroundColor: "#6366F1", borderColor: "#6366F1" },
-  termText: { color: "#64748B", fontSize: 15, fontWeight: "700" },
+  termBtnActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  termText: { color: colors.textMuted, fontSize: 16, fontWeight: "700" },
   termTextActive: { color: "#FFF" },
   emiCard: {
-    backgroundColor: "#13131A",
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 28,
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.xl,
+    padding: spacing.xl,
+    marginBottom: spacing.xxl,
     borderWidth: 1,
-    borderColor: "#1E1E2E",
+    borderColor: colors.surfaceBorder,
   },
-  emiCardTitle: { color: "#94A3B8", fontSize: 13, fontWeight: "600", letterSpacing: 0.5, marginBottom: 16 },
-  emiRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: 10 },
-  emiLabel: { color: "#64748B", fontSize: 14 },
-  emiAmount: { color: "#6366F1", fontSize: 22, fontWeight: "900" },
-  emiSecondary: { color: "#94A3B8", fontSize: 14, fontWeight: "600" },
-  divider: { height: 1, backgroundColor: "#1E1E2E", marginVertical: 12 },
-  emiNote: { color: "#475569", fontSize: 12, lineHeight: 18 },
+  emiCardTitle: { ...typography.label, color: colors.textSecondary, marginBottom: spacing.lg },
+  emiRow: { flexDirection: "row", justifyContent: "space-between", marginBottom: spacing.md },
+  emiLabel: { color: colors.textMuted, fontSize: 15 },
+  emiAmount: { color: colors.primary, fontSize: 24, fontWeight: "900" },
+  emiSecondary: { color: colors.textSecondary, fontSize: 15, fontWeight: "600" },
+  divider: { height: 1, backgroundColor: colors.surfaceBorder, marginVertical: spacing.lg },
+  emiNote: { color: colors.textMuted, fontSize: 13, lineHeight: 20 },
+  submitBtnWrapper: { borderRadius: radius.lg, overflow: "hidden" },
   submitBtn: {
-    backgroundColor: "#6366F1",
-    paddingVertical: 18,
-    borderRadius: 16,
+    paddingVertical: 20,
+    borderRadius: radius.lg,
     alignItems: "center",
   },
-  submitBtnDisabled: { opacity: 0.4 },
-  submitBtnText: { color: "#FFF", fontSize: 16, fontWeight: "800" },
-  walletWarning: { color: "#F87171", fontSize: 13, textAlign: "center", marginTop: 12 },
+  submitBtnDisabled: { opacity: 0.5 },
+  submitBtnText: { color: "#FFF", fontSize: 17, fontWeight: "800" },
+  walletWarning: { color: colors.error, fontSize: 14, textAlign: "center", marginTop: spacing.lg },
 });

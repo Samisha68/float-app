@@ -9,6 +9,7 @@ import {
   ScrollView,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { LinearGradient } from "expo-linear-gradient";
 import { Connection, PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   getAssociatedTokenAddress,
@@ -27,6 +28,7 @@ import {
   TREASURY_SEED,
 } from "../utils/constants";
 import { IDL } from "../idl/float";
+import { colors, radius, typography, spacing } from "../theme/theme";
 
 interface Props {
   navigation: any;
@@ -45,10 +47,8 @@ export function RepayScreen({ navigation, route }: Props) {
   const handleRepay = async () => {
     if (!publicKey) return;
     setSubmitting(true);
-
     try {
       const connection = new Connection(DEVNET_RPC, "confirmed");
-
       await signAndSend(async (walletPubkey) => {
         const [loanPda] = PublicKey.findProgramAddressSync(
           [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer()],
@@ -106,10 +106,8 @@ export function RepayScreen({ navigation, route }: Props) {
   const handleWithdraw = async () => {
     if (!publicKey) return;
     setSubmitting(true);
-
     try {
       const connection = new Connection(DEVNET_RPC, "confirmed");
-
       await signAndSend(async (walletPubkey) => {
         const [loanPda] = PublicKey.findProgramAddressSync(
           [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer()],
@@ -155,16 +153,30 @@ export function RepayScreen({ navigation, route }: Props) {
     }
   };
 
+  const Row = ({
+    label,
+    value,
+    valueColor = colors.textSecondary,
+  }: {
+    label: string;
+    value: string;
+    valueColor?: string;
+  }) => (
+    <View style={styles.row}>
+      <Text style={styles.rowLabel}>{label}</Text>
+      <Text style={[styles.rowValue, { color: valueColor }]}>{value}</Text>
+    </View>
+  );
+
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+    <SafeAreaView style={styles.container} edges={["top"]}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn} activeOpacity={0.7}>
           <Text style={styles.backText}>← Back</Text>
         </TouchableOpacity>
 
         <Text style={styles.title}>{isWithdraw ? "Withdraw Collateral" : "Repay EMI"}</Text>
 
-        {/* Loan summary */}
         <View style={styles.summaryCard}>
           <Row label="Loan Amount" value={`$${formatUsdc(loan.loanAmount)} USDC`} />
           <Row label="Collateral Locked" value={`${formatUsdc(loan.collateralAmount)}`} />
@@ -174,105 +186,86 @@ export function RepayScreen({ navigation, route }: Props) {
               <Row
                 label="Next Due"
                 value={days === 0 ? "Today!" : `${days}d — ${formatDueDate(loan.nextDueTimestamp)}`}
-                valueColor={days <= 3 ? "#F87171" : "#94A3B8"}
+                valueColor={days <= 3 ? colors.error : colors.textSecondary}
               />
               <View style={styles.highlightBox}>
                 <Text style={styles.highlightLabel}>Amount Due Now</Text>
-                <Text style={styles.highlightValue}>
-                  ${formatUsdc(loan.installmentAmount)} USDC
-                </Text>
+                <Text style={styles.highlightValue}>${formatUsdc(loan.installmentAmount)} USDC</Text>
               </View>
             </>
           )}
           {isWithdraw && (
             <View style={styles.highlightBox}>
               <Text style={styles.highlightLabel}>Collateral to Return</Text>
-              <Text style={styles.highlightValue}>
-                {formatUsdc(loan.collateralAmount)} USDC
-              </Text>
+              <Text style={styles.highlightValue}>{formatUsdc(loan.collateralAmount)} USDC</Text>
             </View>
           )}
         </View>
 
-        {/* Action button */}
         <TouchableOpacity
-          style={[styles.actionBtn, submitting && styles.actionBtnDisabled]}
           onPress={isWithdraw ? handleWithdraw : handleRepay}
           disabled={submitting || !publicKey}
+          activeOpacity={0.9}
+          style={styles.actionBtnWrapper}
         >
-          {submitting ? (
-            <ActivityIndicator color="#FFF" />
-          ) : (
-            <Text style={styles.actionBtnText}>
-              {isWithdraw ? "Withdraw Collateral →" : `Pay $${formatUsdc(loan.installmentAmount)} →`}
-            </Text>
-          )}
+          <LinearGradient
+            colors={(submitting || !publicKey) ? ["#374151", "#374151"] : [colors.primary, colors.primaryDark]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={[styles.actionBtn, (submitting || !publicKey) && styles.actionBtnDisabled]}
+          >
+            {submitting ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <Text style={styles.actionBtnText}>
+                {isWithdraw ? "Withdraw Collateral →" : `Pay $${formatUsdc(loan.installmentAmount)} →`}
+              </Text>
+            )}
+          </LinearGradient>
         </TouchableOpacity>
 
-        <Text style={styles.disclaimer}>
-          Transaction will be signed via your mobile wallet.
-        </Text>
+        <Text style={styles.disclaimer}>Transaction will be signed via your mobile wallet.</Text>
       </ScrollView>
     </SafeAreaView>
   );
 }
 
-function Row({
-  label,
-  value,
-  valueColor = "#94A3B8",
-}: {
-  label: string;
-  value: string;
-  valueColor?: string;
-}) {
-  return (
-    <View style={rowStyles.row}>
-      <Text style={rowStyles.label}>{label}</Text>
-      <Text style={[rowStyles.value, { color: valueColor }]}>{value}</Text>
-    </View>
-  );
-}
-
-const rowStyles = StyleSheet.create({
-  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: 12 },
-  label: { color: "#64748B", fontSize: 14 },
-  value: { fontSize: 14, fontWeight: "600" },
-});
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#0A0A0F" },
-  scroll: { padding: 20, paddingBottom: 60 },
-  backBtn: { marginBottom: 16 },
-  backText: { color: "#6366F1", fontSize: 15, fontWeight: "600" },
-  title: { fontSize: 32, fontWeight: "900", color: "#F1F5F9", marginBottom: 24 },
+  container: { flex: 1, backgroundColor: colors.bg },
+  scroll: { padding: spacing.xl, paddingBottom: 72 },
+  backBtn: { marginBottom: spacing.lg },
+  backText: { color: colors.primaryLight, fontSize: 16, fontWeight: "600" },
+  title: { ...typography.h1, color: colors.text, marginBottom: spacing.xxl },
   summaryCard: {
-    backgroundColor: "#13131A",
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 24,
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.xl,
+    padding: spacing.xl,
+    marginBottom: spacing.xxl,
     borderWidth: 1,
-    borderColor: "#1E1E2E",
+    borderColor: colors.surfaceBorder,
   },
+  row: { flexDirection: "row", justifyContent: "space-between", marginBottom: spacing.lg },
+  rowLabel: { color: colors.textMuted, fontSize: 15 },
+  rowValue: { fontSize: 15, fontWeight: "600" },
   highlightBox: {
-    backgroundColor: "#6366F111",
-    borderRadius: 12,
-    padding: 16,
-    marginTop: 8,
+    backgroundColor: colors.primaryMuted,
+    borderRadius: radius.md,
+    padding: spacing.xl,
+    marginTop: spacing.lg,
     borderWidth: 1,
-    borderColor: "#6366F133",
+    borderColor: "rgba(99, 102, 241, 0.25)",
     alignItems: "center",
   },
-  highlightLabel: { color: "#94A3B8", fontSize: 13, marginBottom: 6 },
-  highlightValue: { color: "#6366F1", fontSize: 28, fontWeight: "900" },
+  highlightLabel: { color: colors.textSecondary, fontSize: 14, marginBottom: spacing.sm },
+  highlightValue: { color: colors.primary, fontSize: 28, fontWeight: "900" },
+  actionBtnWrapper: { borderRadius: radius.lg, overflow: "hidden" },
   actionBtn: {
-    backgroundColor: "#6366F1",
-    paddingVertical: 18,
-    borderRadius: 16,
+    paddingVertical: 20,
+    borderRadius: radius.lg,
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: spacing.lg,
   },
-  actionBtnDisabled: { opacity: 0.4 },
-  actionBtnText: { color: "#FFF", fontSize: 16, fontWeight: "800" },
-  disclaimer: { color: "#334155", fontSize: 12, textAlign: "center" },
+  actionBtnDisabled: { opacity: 0.5 },
+  actionBtnText: { color: "#FFF", fontSize: 17, fontWeight: "800" },
+  disclaimer: { color: colors.textMuted, fontSize: 13, textAlign: "center" },
 });

@@ -1,5 +1,5 @@
 // Auto-generated IDL type for Float program.
-// Replace program ID after `anchor deploy` on devnet.
+// Program ID: AeWSncwhRY2TyRnM7UByjhmmcgE8rrbMs9y8vwJomgmX (devnet)
 
 export type Float = {
   address: string;
@@ -74,6 +74,112 @@ export type Float = {
         { name: "systemProgram"; isMut: false; isSigner: false }
       ];
       args: [];
+    },
+    {
+      name: "initializeMicroPool";
+      accounts: [
+        { name: "payer"; isMut: true; isSigner: true },
+        { name: "poolState"; isMut: true; isSigner: false },
+        { name: "loanMint"; isMut: false; isSigner: false },
+        { name: "poolLoanAta"; isMut: true; isSigner: false },
+        { name: "tokenProgram"; isMut: false; isSigner: false },
+        { name: "associatedTokenProgram"; isMut: false; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false }
+      ];
+      args: [];
+    },
+    {
+      name: "initializeAgentConfig";
+      accounts: [
+        { name: "admin"; isMut: true; isSigner: true },
+        { name: "agentConfig"; isMut: true; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false }
+      ];
+      args: [{ name: "agentPubkey"; type: "publicKey" }];
+    },
+    {
+      name: "depositToPool";
+      accounts: [
+        { name: "depositor"; isMut: true; isSigner: true },
+        { name: "poolState"; isMut: true; isSigner: false },
+        { name: "depositorAta"; isMut: true; isSigner: false },
+        { name: "poolLoanAta"; isMut: true; isSigner: false },
+        { name: "loanMint"; isMut: false; isSigner: false },
+        { name: "tokenProgram"; isMut: false; isSigner: false },
+        { name: "associatedTokenProgram"; isMut: false; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false }
+      ];
+      args: [{ name: "amount"; type: "u64" }];
+    },
+    {
+      name: "agentMatchLoan";
+      accounts: [
+        { name: "agent"; isMut: true; isSigner: true },
+        { name: "agentConfig"; isMut: false; isSigner: false },
+        { name: "borrower"; isMut: true; isSigner: true },
+        { name: "microLoan"; isMut: true; isSigner: false },
+        { name: "poolState"; isMut: true; isSigner: false },
+        { name: "poolLoanAta"; isMut: true; isSigner: false },
+        { name: "borrowerCollateralAta"; isMut: true; isSigner: false },
+        { name: "borrowerLoanAta"; isMut: true; isSigner: false },
+        { name: "vaultCollateralAta"; isMut: true; isSigner: false },
+        { name: "collateralMint"; isMut: false; isSigner: false },
+        { name: "loanMint"; isMut: false; isSigner: false },
+        { name: "tokenProgram"; isMut: false; isSigner: false },
+        { name: "associatedTokenProgram"; isMut: false; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false },
+        { name: "rent"; isMut: false; isSigner: false }
+      ];
+      args: [
+        { name: "amount"; type: "u64" },
+        { name: "termDays"; type: "u8" },
+        { name: "nonce"; type: "u64" }
+      ];
+    },
+    {
+      name: "repayMicroLoan";
+      accounts: [
+        { name: "borrower"; isMut: true; isSigner: true },
+        { name: "microLoan"; isMut: true; isSigner: false },
+        { name: "borrowerLoanAta"; isMut: true; isSigner: false },
+        { name: "poolLoanAta"; isMut: true; isSigner: false },
+        { name: "poolState"; isMut: false; isSigner: false },
+        { name: "loanMint"; isMut: false; isSigner: false },
+        { name: "tokenProgram"; isMut: false; isSigner: false },
+        { name: "associatedTokenProgram"; isMut: false; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false }
+      ];
+      args: [];
+    },
+    {
+      name: "liquidateMicroLoan";
+      accounts: [
+        { name: "caller"; isMut: true; isSigner: true },
+        { name: "microLoan"; isMut: true; isSigner: false },
+        { name: "vaultCollateralAta"; isMut: true; isSigner: false },
+        { name: "poolCollateralAta"; isMut: true; isSigner: false },
+        { name: "poolState"; isMut: false; isSigner: false },
+        { name: "collateralMint"; isMut: false; isSigner: false },
+        { name: "tokenProgram"; isMut: false; isSigner: false },
+        { name: "associatedTokenProgram"; isMut: false; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false }
+      ];
+      args: [];
+    },
+    {
+      name: "withdrawCollateralMicro";
+      accounts: [
+        { name: "borrower"; isMut: true; isSigner: true },
+        { name: "microLoan"; isMut: true; isSigner: false },
+        { name: "vaultCollateralAta"; isMut: true; isSigner: false },
+        { name: "borrowerCollateralAta"; isMut: true; isSigner: false },
+        { name: "poolState"; isMut: false; isSigner: false },
+        { name: "collateralMint"; isMut: false; isSigner: false },
+        { name: "tokenProgram"; isMut: false; isSigner: false },
+        { name: "associatedTokenProgram"; isMut: false; isSigner: false },
+        { name: "systemProgram"; isMut: false; isSigner: false }
+      ];
+      args: [];
     }
   ];
   accounts: [
@@ -98,11 +204,64 @@ export type Float = {
           { name: "vaultBump"; type: "u8" }
         ];
       };
+    },
+    {
+      name: "poolState";
+      type: {
+        kind: "struct";
+        fields: [
+          { name: "bump"; type: "u8" },
+          { name: "totalDeposited"; type: "u64" }
+        ];
+      };
+    },
+    {
+      name: "agentConfig";
+      type: {
+        kind: "struct";
+        fields: [
+          { name: "authorizedAgent"; type: "publicKey" }
+        ];
+      };
+    },
+    {
+      name: "microLoan";
+      type: {
+        kind: "struct";
+        fields: [
+          { name: "borrower"; type: "publicKey" },
+          { name: "amount"; type: "u64" },
+          { name: "termDays"; type: "u8" },
+          { name: "collateralAmount"; type: "u64" },
+          { name: "totalRepay"; type: "u64" },
+          { name: "dueAt"; type: "i64" },
+          { name: "graceUntil"; type: "i64" },
+          { name: "status"; type: { defined: "MicroLoanStatus" } },
+          { name: "createdAt"; type: "i64" },
+          { name: "nonce"; type: "u64" },
+          { name: "loanMint"; type: "publicKey" },
+          { name: "collateralMint"; type: "publicKey" },
+          { name: "vaultBump"; type: "u8" },
+          { name: "pool"; type: "publicKey" }
+        ];
+      };
     }
   ];
   types: [
     {
       name: "LoanStatus";
+      type: {
+        kind: "enum";
+        variants: [
+          { name: "Active" },
+          { name: "Repaid" },
+          { name: "Liquidated" },
+          { name: "CollateralWithdrawn" }
+        ];
+      };
+    },
+    {
+      name: "MicroLoanStatus";
       type: {
         kind: "enum";
         variants: [
@@ -129,7 +288,7 @@ export type Float = {
 };
 
 export const IDL: Float = {
-  address: "FLoAtXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+  address: "AeWSncwhRY2TyRnM7UByjhmmcgE8rrbMs9y8vwJomgmX",
   metadata: { name: "float", version: "0.1.0", spec: "0.1.0" },
   version: "0.1.0",
   name: "float",
@@ -202,6 +361,112 @@ export const IDL: Float = {
       ],
       args: [],
     },
+    {
+      name: "initializeMicroPool",
+      accounts: [
+        { name: "payer", isMut: true, isSigner: true },
+        { name: "poolState", isMut: true, isSigner: false },
+        { name: "loanMint", isMut: false, isSigner: false },
+        { name: "poolLoanAta", isMut: true, isSigner: false },
+        { name: "tokenProgram", isMut: false, isSigner: false },
+        { name: "associatedTokenProgram", isMut: false, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+      ],
+      args: [],
+    },
+    {
+      name: "initializeAgentConfig",
+      accounts: [
+        { name: "admin", isMut: true, isSigner: true },
+        { name: "agentConfig", isMut: true, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+      ],
+      args: [{ name: "agentPubkey", type: "publicKey" }],
+    },
+    {
+      name: "depositToPool",
+      accounts: [
+        { name: "depositor", isMut: true, isSigner: true },
+        { name: "poolState", isMut: true, isSigner: false },
+        { name: "depositorAta", isMut: true, isSigner: false },
+        { name: "poolLoanAta", isMut: true, isSigner: false },
+        { name: "loanMint", isMut: false, isSigner: false },
+        { name: "tokenProgram", isMut: false, isSigner: false },
+        { name: "associatedTokenProgram", isMut: false, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+      ],
+      args: [{ name: "amount", type: "u64" }],
+    },
+    {
+      name: "agentMatchLoan",
+      accounts: [
+        { name: "agent", isMut: true, isSigner: true },
+        { name: "agentConfig", isMut: false, isSigner: false },
+        { name: "borrower", isMut: true, isSigner: true },
+        { name: "microLoan", isMut: true, isSigner: false },
+        { name: "poolState", isMut: true, isSigner: false },
+        { name: "poolLoanAta", isMut: true, isSigner: false },
+        { name: "borrowerCollateralAta", isMut: true, isSigner: false },
+        { name: "borrowerLoanAta", isMut: true, isSigner: false },
+        { name: "vaultCollateralAta", isMut: true, isSigner: false },
+        { name: "collateralMint", isMut: false, isSigner: false },
+        { name: "loanMint", isMut: false, isSigner: false },
+        { name: "tokenProgram", isMut: false, isSigner: false },
+        { name: "associatedTokenProgram", isMut: false, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+        { name: "rent", isMut: false, isSigner: false },
+      ],
+      args: [
+        { name: "amount", type: "u64" },
+        { name: "termDays", type: "u8" },
+        { name: "nonce", type: "u64" },
+      ],
+    },
+    {
+      name: "repayMicroLoan",
+      accounts: [
+        { name: "borrower", isMut: true, isSigner: true },
+        { name: "microLoan", isMut: true, isSigner: false },
+        { name: "borrowerLoanAta", isMut: true, isSigner: false },
+        { name: "poolLoanAta", isMut: true, isSigner: false },
+        { name: "poolState", isMut: false, isSigner: false },
+        { name: "loanMint", isMut: false, isSigner: false },
+        { name: "tokenProgram", isMut: false, isSigner: false },
+        { name: "associatedTokenProgram", isMut: false, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+      ],
+      args: [],
+    },
+    {
+      name: "liquidateMicroLoan",
+      accounts: [
+        { name: "caller", isMut: true, isSigner: true },
+        { name: "microLoan", isMut: true, isSigner: false },
+        { name: "vaultCollateralAta", isMut: true, isSigner: false },
+        { name: "poolCollateralAta", isMut: true, isSigner: false },
+        { name: "poolState", isMut: false, isSigner: false },
+        { name: "collateralMint", isMut: false, isSigner: false },
+        { name: "tokenProgram", isMut: false, isSigner: false },
+        { name: "associatedTokenProgram", isMut: false, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+      ],
+      args: [],
+    },
+    {
+      name: "withdrawCollateralMicro",
+      accounts: [
+        { name: "borrower", isMut: true, isSigner: true },
+        { name: "microLoan", isMut: true, isSigner: false },
+        { name: "vaultCollateralAta", isMut: true, isSigner: false },
+        { name: "borrowerCollateralAta", isMut: true, isSigner: false },
+        { name: "poolState", isMut: false, isSigner: false },
+        { name: "collateralMint", isMut: false, isSigner: false },
+        { name: "tokenProgram", isMut: false, isSigner: false },
+        { name: "associatedTokenProgram", isMut: false, isSigner: false },
+        { name: "systemProgram", isMut: false, isSigner: false },
+      ],
+      args: [],
+    },
   ],
   accounts: [
     {
@@ -226,10 +491,63 @@ export const IDL: Float = {
         ],
       },
     },
+    {
+      name: "poolState",
+      type: {
+        kind: "struct",
+        fields: [
+          { name: "bump", type: "u8" },
+          { name: "totalDeposited", type: "u64" },
+        ],
+      },
+    },
+    {
+      name: "agentConfig",
+      type: {
+        kind: "struct",
+        fields: [
+          { name: "authorizedAgent", type: "publicKey" },
+        ],
+      },
+    },
+    {
+      name: "microLoan",
+      type: {
+        kind: "struct",
+        fields: [
+          { name: "borrower", type: "publicKey" },
+          { name: "amount", type: "u64" },
+          { name: "termDays", type: "u8" },
+          { name: "collateralAmount", type: "u64" },
+          { name: "totalRepay", type: "u64" },
+          { name: "dueAt", type: "i64" },
+          { name: "graceUntil", type: "i64" },
+          { name: "status", type: { defined: "MicroLoanStatus" } },
+          { name: "createdAt", type: "i64" },
+          { name: "nonce", type: "u64" },
+          { name: "loanMint", type: "publicKey" },
+          { name: "collateralMint", type: "publicKey" },
+          { name: "vaultBump", type: "u8" },
+          { name: "pool", type: "publicKey" },
+        ],
+      },
+    },
   ],
   types: [
     {
       name: "LoanStatus",
+      type: {
+        kind: "enum",
+        variants: [
+          { name: "Active" },
+          { name: "Repaid" },
+          { name: "Liquidated" },
+          { name: "CollateralWithdrawn" },
+        ],
+      },
+    },
+    {
+      name: "MicroLoanStatus",
       type: {
         kind: "enum",
         variants: [
