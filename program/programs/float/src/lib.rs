@@ -58,6 +58,7 @@ pub mod float {
         loan_amount: u64,
         installments: u8,
         annual_rate_bps: u64,
+        nonce: u64,
     ) -> Result<()> {
         // ── Validation ────────────────────────────────────────────────────
         require!(installments == 3 || installments == 6 || installments == 12,
@@ -152,6 +153,7 @@ pub mod float {
         loan.created_at          = now;
         loan.annual_rate_bps     = annual_rate_bps;
         loan.vault_bump          = ctx.bumps.loan;
+        loan.nonce               = nonce;
 
         emit!(LoanInitialized {
             loan: loan.key(),
@@ -238,10 +240,12 @@ pub mod float {
         // ── Transfer collateral from vault → treasury collateral ATA ──────
         // Vault ATA authority is the loan PDA; sign with loan seeds.
         let loan_bump = loan.vault_bump;
+        let nonce_bytes = loan.nonce.to_le_bytes();
         let loan_seeds: &[&[u8]] = &[
             LOAN_SEED,
             loan.borrower.as_ref(),
             loan.loan_mint.as_ref(),
+            &nonce_bytes,
             &[loan_bump],
         ];
         let signer_seeds = &[loan_seeds];
@@ -286,10 +290,12 @@ pub mod float {
 
         // ── Transfer collateral from vault → borrower ─────────────────────
         let loan_bump = loan.vault_bump;
+        let nonce_bytes = loan.nonce.to_le_bytes();
         let loan_seeds: &[&[u8]] = &[
             LOAN_SEED,
             loan.borrower.as_ref(),
             loan.loan_mint.as_ref(),
+            &nonce_bytes,
             &[loan_bump],
         ];
         let signer_seeds = &[loan_seeds];
@@ -332,6 +338,12 @@ pub mod float {
     /// Set the authorized agent key (admin). Call once.
     pub fn initialize_agent_config(ctx: Context<InitializeAgentConfig>, agent_pubkey: Pubkey) -> Result<()> {
         ctx.accounts.agent_config.authorized_agent = agent_pubkey;
+        Ok(())
+    }
+
+    /// Update the authorized agent to a new wallet.
+    pub fn update_agent_config(ctx: Context<UpdateAgentConfig>, new_agent: Pubkey) -> Result<()> {
+        ctx.accounts.agent_config.authorized_agent = new_agent;
         Ok(())
     }
 
@@ -573,20 +585,19 @@ pub mod float {
 // ─────────────────────────────────────────────
 
 #[derive(Accounts)]
-#[instruction(collateral_amount: u64, loan_amount: u64, installments: u8, annual_rate_bps: u64)]
+#[instruction(collateral_amount: u64, loan_amount: u64, installments: u8, annual_rate_bps: u64, nonce: u64)]
 pub struct InitializeLoan<'info> {
     /// The borrower who initiates the loan and pays for account creation.
     #[account(mut)]
     pub borrower: Signer<'info>,
 
-    /// The LoanAccount PDA. Seeded by [LOAN_SEED, borrower, loan_mint, created_at_nonce].
-    /// Using `init` here means each call creates a fresh PDA — borrowers can have
-    /// multiple loans by using different nonces (encoded as a u64 timestamp).
+    /// The LoanAccount PDA. Seeded by [LOAN_SEED, borrower, loan_mint, nonce].
+    /// Each nonce creates a unique PDA so borrowers can have multiple loans.
     #[account(
         init,
         payer = borrower,
         space = LoanAccount::LEN,
-        seeds = [LOAN_SEED, borrower.key().as_ref(), loan_mint.key().as_ref()],
+        seeds = [LOAN_SEED, borrower.key().as_ref(), loan_mint.key().as_ref(), &nonce.to_le_bytes()],
         bump,
     )]
     pub loan: Box<Account<'info, LoanAccount>>,
@@ -650,7 +661,7 @@ pub struct RepayInstallment<'info> {
 
     #[account(
         mut,
-        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref()],
+        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref(), &loan.nonce.to_le_bytes()],
         bump,
         has_one = borrower,
     )]
@@ -692,7 +703,7 @@ pub struct Liquidate<'info> {
 
     #[account(
         mut,
-        seeds = [LOAN_SEED, loan.borrower.as_ref(), loan.loan_mint.as_ref()],
+        seeds = [LOAN_SEED, loan.borrower.as_ref(), loan.loan_mint.as_ref(), &loan.nonce.to_le_bytes()],
         bump,
     )]
     pub loan: Account<'info, LoanAccount>,
@@ -731,7 +742,7 @@ pub struct WithdrawCollateral<'info> {
 
     #[account(
         mut,
-        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref()],
+        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref(), &loan.nonce.to_le_bytes()],
         bump,
         has_one = borrower,
     )]
@@ -806,6 +817,19 @@ pub struct InitializeAgentConfig<'info> {
     pub agent_config: Account<'info, AgentConfig>,
 
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateAgentConfig<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [AGENT_CONFIG_SEED],
+        bump,
+    )]
+    pub agent_config: Account<'info, AgentConfig>,
 }
 
 #[derive(Accounts)]
@@ -1069,6 +1093,9 @@ pub struct LoanAccount {
 
     /// Bump seed for the vault ATA PDA (needed for signing CPI).
     pub vault_bump: u8,             // 1
+
+    /// Nonce used in PDA derivation (allows multiple loans per borrower per mint).
+    pub nonce: u64,                 // 8
 }
 
 impl LoanAccount {
@@ -1088,7 +1115,8 @@ impl LoanAccount {
         + 8   // created_at
         + 8   // annual_rate_bps
         + 1   // vault_bump
-        + 64; // padding for future fields
+        + 8   // nonce
+        + 56; // padding for future fields
 }
 
 /// Lifecycle status of a loan.

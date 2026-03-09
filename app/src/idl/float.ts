@@ -28,7 +28,8 @@ export type Float = {
         { name: "collateralAmount"; type: "u64" },
         { name: "loanAmount"; type: "u64" },
         { name: "installments"; type: "u8" },
-        { name: "annualRateBps"; type: "u64" }
+        { name: "annualRateBps"; type: "u64" },
+        { name: "nonce"; type: "u64" }
       ];
     },
     {
@@ -96,6 +97,14 @@ export type Float = {
         { name: "systemProgram"; isMut: false; isSigner: false }
       ];
       args: [{ name: "agentPubkey"; type: "publicKey" }];
+    },
+    {
+      name: "updateAgentConfig";
+      accounts: [
+        { name: "authority"; isMut: true; isSigner: true },
+        { name: "agentConfig"; isMut: true; isSigner: false }
+      ];
+      args: [{ name: "newAgent"; type: "publicKey" }];
     },
     {
       name: "depositToPool";
@@ -201,7 +210,8 @@ export type Float = {
           { name: "status"; type: { defined: "LoanStatus" } },
           { name: "createdAt"; type: "i64" },
           { name: "annualRateBps"; type: "u64" },
-          { name: "vaultBump"; type: "u8" }
+          { name: "vaultBump"; type: "u8" },
+          { name: "nonce"; type: "u64" }
         ];
       };
     },
@@ -315,6 +325,7 @@ export const IDL: Float = {
         { name: "loanAmount", type: "u64" },
         { name: "installments", type: "u8" },
         { name: "annualRateBps", type: "u64" },
+        { name: "nonce", type: "u64" },
       ],
     },
     {
@@ -382,6 +393,14 @@ export const IDL: Float = {
         { name: "systemProgram", isMut: false, isSigner: false },
       ],
       args: [{ name: "agentPubkey", type: "publicKey" }],
+    },
+    {
+      name: "updateAgentConfig",
+      accounts: [
+        { name: "authority", isMut: true, isSigner: true },
+        { name: "agentConfig", isMut: true, isSigner: false },
+      ],
+      args: [{ name: "newAgent", type: "publicKey" }],
     },
     {
       name: "depositToPool",
@@ -488,6 +507,7 @@ export const IDL: Float = {
           { name: "createdAt", type: "i64" },
           { name: "annualRateBps", type: "u64" },
           { name: "vaultBump", type: "u8" },
+          { name: "nonce", type: "u64" },
         ],
       },
     },

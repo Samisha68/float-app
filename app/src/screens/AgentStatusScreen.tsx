@@ -194,9 +194,33 @@ export function AgentStatusScreen({ navigation }: Props) {
       }
       const authorizedAgent = new PublicKey(agentCfg.data.subarray(8, 40));
       if (!authorizedAgent.equals(publicKey)) {
-        return failWith("Connected wallet is not the authorized agent in agent_config.");
+        pushLog("check", "Wallet not yet authorized — updating agent config...");
+        try {
+          await signAndSend(async (walletPubkey) => {
+            const program = new anchor.Program(
+              IDL as unknown as anchor.Idl,
+              FLOAT_PROGRAM_ID,
+              new anchor.AnchorProvider(
+                connection,
+                { publicKey: walletPubkey, signTransaction: async (t) => t, signAllTransactions: async (t) => t },
+                { commitment: "confirmed" }
+              )
+            );
+            return program.methods
+              .updateAgentConfig(walletPubkey)
+              .accounts({
+                authority: walletPubkey,
+                agentConfig: agentConfigPda,
+              })
+              .transaction();
+          });
+          pushLog("check", "Agent config updated to this wallet.");
+        } catch (e: unknown) {
+          return failWith("Failed to update agent config: " + extractErrorMessage(e));
+        }
+      } else {
+        pushLog("check", "Authorized agent check passed.");
       }
-      pushLog("check", "Authorized agent check passed.");
 
       if (pausedRef.current) return failWith("Execution paused before risk checks.");
 

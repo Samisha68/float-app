@@ -17,6 +17,7 @@ export interface LoanData {
   status: string;
   createdAt: number;
   annualRateBps: number;
+  nonce: number;
 }
 
 const STATUS_MAP: Record<number, string> = {
@@ -65,7 +66,8 @@ function readI64LE(buf: Buffer, offset: number): number {
  *   [147..155] created_at: i64 (8)
  *   [155..163] annual_rate_bps: u64 (8)
  *   [163]      vault_bump: u8 (1)
- *   [164..228] padding (64 bytes)
+ *   [164..172] nonce: u64 (8)
+ *   [172..228] padding (56 bytes)
  */
 function parseLoanAccount(data: Buffer, pda: PublicKey): LoanData {
   let o = 8; // skip Anchor discriminator
@@ -83,6 +85,8 @@ function parseLoanAccount(data: Buffer, pda: PublicKey): LoanData {
   const statusByte = data.readUInt8(o); o += 1;
   const createdAt = readI64LE(data, o); o += 8;
   const annualRateBps = readU64LE(data, o); o += 8;
+  /* vault_bump */ o += 1;
+  const nonce = readU64LE(data, o); o += 8;
 
   return {
     publicKey: pda,
@@ -99,6 +103,7 @@ function parseLoanAccount(data: Buffer, pda: PublicKey): LoanData {
     status: STATUS_MAP[statusByte] ?? "unknown",
     createdAt,
     annualRateBps,
+    nonce,
   };
 }
 
@@ -115,40 +120,50 @@ export function useLoans(walletPublicKey: PublicKey | null) {
     try {
       const connection = new Connection(DEVNET_RPC, "confirmed");
 
-      // Derive the expected loan PDA for this borrower + USDC.
-      const [loanPda] = PublicKey.findProgramAddressSync(
-        [LOAN_SEED, walletPublicKey.toBuffer(), USDC_MINT.toBuffer()],
-        FLOAT_PROGRAM_ID
-      );
+      // Fetch ALL loan accounts for this borrower using getProgramAccounts.
+      // Since nonce is part of the PDA seeds, we can't derive a single PDA.
+      // Filter by borrower pubkey at offset 8 (after 8-byte Anchor discriminator).
+      console.log("[useLoans] Fetching all loans for:", walletPublicKey.toBase58());
 
-      console.log("[useLoans] Fetching loan PDA:", loanPda.toBase58());
-
-      const accountInfo = await connection.getAccountInfo(loanPda);
-
-      if (!accountInfo || !accountInfo.data) {
-        console.log("[useLoans] No loan account found for this wallet");
+      let accounts;
+      try {
+        accounts = await connection.getProgramAccounts(FLOAT_PROGRAM_ID, {
+          filters: [
+            { memcmp: { offset: 8, bytes: walletPublicKey.toBase58() } },
+          ],
+        });
+      } catch (netErr: any) {
+        console.warn("[useLoans] Network error fetching loans:", netErr.message);
         setLoans([]);
         return;
       }
 
-      console.log(
-        "[useLoans] Account found — size:",
-        accountInfo.data.length,
-        "owner:",
-        accountInfo.owner.toBase58()
-      );
+      if (!accounts || accounts.length === 0) {
+        console.log("[useLoans] No loan accounts found for this wallet");
+        setLoans([]);
+        return;
+      }
 
-      const loan = parseLoanAccount(Buffer.from(accountInfo.data), loanPda);
+      console.log("[useLoans] Found", accounts.length, "account(s)");
 
-      console.log("[useLoans] ✓ Parsed loan:", {
-        borrower: loan.borrower.toBase58(),
-        status: loan.status,
-        loanAmount: loan.loanAmount,
-        collateralAmount: loan.collateralAmount,
-        payments: `${loan.installmentsPaid}/${loan.totalInstallments}`,
-      });
+      const parsed: LoanData[] = [];
+      for (const { pubkey, account } of accounts) {
+        try {
+          const loan = parseLoanAccount(Buffer.from(account.data), pubkey);
+          console.log("[useLoans] ✓ Parsed loan:", {
+            pda: pubkey.toBase58(),
+            status: loan.status,
+            loanAmount: loan.loanAmount,
+            payments: `${loan.installmentsPaid}/${loan.totalInstallments}`,
+          });
+          parsed.push(loan);
+        } catch (parseErr: any) {
+          // Skip accounts that aren't LoanAccount (e.g. other account types from this program)
+          console.warn("[useLoans] Skipping account", pubkey.toBase58(), parseErr.message);
+        }
+      }
 
-      setLoans([loan]);
+      setLoans(parsed);
     } catch (err: any) {
       console.error("[useLoans] Error:", err.message ?? err);
       setError(err.message ?? "Failed to fetch loans");

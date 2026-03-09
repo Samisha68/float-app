@@ -138,11 +138,14 @@ export function CreateLoanScreen({ navigation }: Props) {
       });
 
       const tokens: CollateralToken[] = [];
+      const usdcMintStr = USDC_MINT.toBase58();
       for (const { account } of parsedAccounts.value) {
         const info = account.data.parsed?.info;
         if (!info?.mint || !info?.tokenAmount?.amount) continue;
 
         const mintStr = String(info.mint);
+        // Only show the app's USDC mint as collateral (both sides use USDC on devnet)
+        if (mintStr !== usdcMintStr) continue;
         const rawAmount = BigInt(String(info.tokenAmount.amount));
         if (rawAmount <= 0) continue;
 
@@ -231,8 +234,11 @@ export function CreateLoanScreen({ navigation }: Props) {
       }
 
       await signAndSend(async (walletPubkey) => {
+        // Use timestamp as nonce so each loan gets a unique PDA
+        const loanNonce = new anchor.BN(Date.now());
+        const nonceBuf = loanNonce.toArrayLike(Buffer, "le", 8);
         const [loanPda] = PublicKey.findProgramAddressSync(
-          [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer()],
+          [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer(), nonceBuf],
           FLOAT_PROGRAM_ID
         );
         const [treasuryPda] = PublicKey.findProgramAddressSync([TREASURY_SEED], FLOAT_PROGRAM_ID);
@@ -269,7 +275,7 @@ export function CreateLoanScreen({ navigation }: Props) {
         );
 
         const initLoanTx = await program.methods
-          .initializeLoan(collateralLamports, loanLamports, installments, annualRateBps)
+          .initializeLoan(collateralLamports, loanLamports, installments, annualRateBps, loanNonce)
           .accounts({
             borrower: walletPubkey,
             loan: loanPda,

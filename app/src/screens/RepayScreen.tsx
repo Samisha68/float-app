@@ -24,7 +24,6 @@ import {
   DEVNET_RPC,
   FLOAT_PROGRAM_ID,
   USDC_MINT,
-  LOAN_SEED,
   TREASURY_SEED,
 } from "../utils/constants";
 import { IDL } from "../idl/float";
@@ -50,10 +49,8 @@ export function RepayScreen({ navigation, route }: Props) {
     try {
       const connection = new Connection(DEVNET_RPC, "confirmed");
       await signAndSend(async (walletPubkey) => {
-        const [loanPda] = PublicKey.findProgramAddressSync(
-          [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer()],
-          FLOAT_PROGRAM_ID
-        );
+        // Use the loan's existing PDA address (nonce is part of seeds, can't re-derive without it)
+        const loanPda = loan.publicKey;
         const [treasuryPda] = PublicKey.findProgramAddressSync(
           [TREASURY_SEED],
           FLOAT_PROGRAM_ID
@@ -109,10 +106,7 @@ export function RepayScreen({ navigation, route }: Props) {
     try {
       const connection = new Connection(DEVNET_RPC, "confirmed");
       await signAndSend(async (walletPubkey) => {
-        const [loanPda] = PublicKey.findProgramAddressSync(
-          [LOAN_SEED, walletPubkey.toBuffer(), USDC_MINT.toBuffer()],
-          FLOAT_PROGRAM_ID
-        );
+        const loanPda = loan.publicKey;
         const vaultCollateralAta = await getAssociatedTokenAddress(USDC_MINT, loanPda, true);
         const borrowerCollateralAta = await getAssociatedTokenAddress(USDC_MINT, walletPubkey);
 
