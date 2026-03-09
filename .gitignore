@@ -23,6 +23,8 @@ program/target/
 .env.*.local
 *.pem
 **/id.json
+**/demo-wallet.json
+**/agent.json
 .keypair
 
 # IDE and editor (local state; may contain paths/settings)

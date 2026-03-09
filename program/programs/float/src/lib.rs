@@ -22,6 +22,16 @@ const BPS_DENOMINATOR: u64 = 10_000;
 /// Seed prefixes for PDAs.
 const LOAN_SEED: &[u8] = b"loan";
 const TREASURY_SEED: &[u8] = b"treasury";
+const MICRO_POOL_SEED: &[u8] = b"micro_pool";
+const MICRO_LOAN_SEED: &[u8] = b"micro_loan";
+const AGENT_CONFIG_SEED: &[u8] = b"agent_config";
+
+/// AI micro-lending caps (MVP).
+const MICRO_LOAN_MAX_USDC: u64 = 100_000_000;   // $100 (6 decimals)
+const MICRO_POOL_EXPOSURE_BPS: u64 = 1_000;     // 10% of pool per loan
+const MICRO_COLLATERAL_NUMERATOR: u64 = 110;    // 110% collateral
+const MICRO_COLLATERAL_DENOMINATOR: u64 = 100;
+const MICRO_GRACE_PERIOD_SECS: i64 = 24 * 60 * 60; // 1 day
 
 // ─────────────────────────────────────────────
 // Program entry point
@@ -48,6 +58,7 @@ pub mod float {
         loan_amount: u64,
         installments: u8,
         annual_rate_bps: u64,
+        nonce: u64,
     ) -> Result<()> {
         // ── Validation ────────────────────────────────────────────────────
         require!(installments == 3 || installments == 6 || installments == 12,
@@ -142,6 +153,7 @@ pub mod float {
         loan.created_at          = now;
         loan.annual_rate_bps     = annual_rate_bps;
         loan.vault_bump          = ctx.bumps.loan;
+        loan.nonce               = nonce;
 
         emit!(LoanInitialized {
             loan: loan.key(),
@@ -228,10 +240,12 @@ pub mod float {
         // ── Transfer collateral from vault → treasury collateral ATA ──────
         // Vault ATA authority is the loan PDA; sign with loan seeds.
         let loan_bump = loan.vault_bump;
+        let nonce_bytes = loan.nonce.to_le_bytes();
         let loan_seeds: &[&[u8]] = &[
             LOAN_SEED,
             loan.borrower.as_ref(),
             loan.loan_mint.as_ref(),
+            &nonce_bytes,
             &[loan_bump],
         ];
         let signer_seeds = &[loan_seeds];
@@ -276,10 +290,12 @@ pub mod float {
 
         // ── Transfer collateral from vault → borrower ─────────────────────
         let loan_bump = loan.vault_bump;
+        let nonce_bytes = loan.nonce.to_le_bytes();
         let loan_seeds: &[&[u8]] = &[
             LOAN_SEED,
             loan.borrower.as_ref(),
             loan.loan_mint.as_ref(),
+            &nonce_bytes,
             &[loan_bump],
         ];
         let signer_seeds = &[loan_seeds];
@@ -309,6 +325,259 @@ pub mod float {
 
         Ok(())
     }
+
+    // ─────────────── AI Micro-Lending (MONOLITH Hackathon) ───────────────
+
+    /// Initialize the micro-pool (liquidity pool for AI agents). Call once.
+    pub fn initialize_micro_pool(ctx: Context<InitializeMicroPool>) -> Result<()> {
+        ctx.accounts.pool_state.bump = ctx.bumps.pool_state;
+        ctx.accounts.pool_state.total_deposited = 0;
+        Ok(())
+    }
+
+    /// Set the authorized agent key (admin). Call once.
+    pub fn initialize_agent_config(ctx: Context<InitializeAgentConfig>, agent_pubkey: Pubkey) -> Result<()> {
+        ctx.accounts.agent_config.authorized_agent = agent_pubkey;
+        Ok(())
+    }
+
+    /// Update the authorized agent to a new wallet.
+    pub fn update_agent_config(ctx: Context<UpdateAgentConfig>, new_agent: Pubkey) -> Result<()> {
+        ctx.accounts.agent_config.authorized_agent = new_agent;
+        Ok(())
+    }
+
+    /// Lender deposits USDC into the micro-pool.
+    pub fn deposit_to_pool(ctx: Context<DepositToPool>, amount: u64) -> Result<()> {
+        require!(amount > 0, FloatError::InvalidLoanAmount);
+
+        let cpi_ctx = CpiContext::new(
+            ctx.accounts.token_program.to_account_info(),
+            Transfer {
+                from: ctx.accounts.depositor_ata.to_account_info(),
+                to: ctx.accounts.pool_loan_ata.to_account_info(),
+                authority: ctx.accounts.depositor.to_account_info(),
+            },
+        );
+        token::transfer(cpi_ctx, amount)?;
+
+        let pool = &mut ctx.accounts.pool_state;
+        pool.total_deposited = pool.total_deposited
+            .checked_add(amount)
+            .ok_or(FloatError::MathOverflow)?;
+
+        emit!(MicroPoolDeposit {
+            depositor: ctx.accounts.depositor.key(),
+            amount,
+            new_total: pool.total_deposited,
+        });
+        Ok(())
+    }
+
+    /// Agent-only: match a micro-loan (disburse from pool, lock mini-collateral).
+    pub fn agent_match_loan(
+        ctx: Context<AgentMatchLoan>,
+        amount: u64,
+        term_days: u8,
+        nonce: u64,
+    ) -> Result<()> {
+        require!(term_days >= 1 && term_days <= 7, FloatError::InvalidInstallmentCount);
+        require!(amount > 0 && amount <= MICRO_LOAN_MAX_USDC, FloatError::InvalidLoanAmount);
+
+        let agent_config = &ctx.accounts.agent_config;
+        require!(
+            ctx.accounts.agent.key() == agent_config.authorized_agent,
+            FloatError::Unauthorized
+        );
+
+        let pool_balance = ctx.accounts.pool_loan_ata.amount;
+        let max_per_loan = pool_balance
+            .checked_mul(MICRO_POOL_EXPOSURE_BPS)
+            .ok_or(FloatError::MathOverflow)?
+            .checked_div(10_000)
+            .ok_or(FloatError::MathOverflow)?;
+        require!(amount <= max_per_loan, FloatError::InsufficientCollateral);
+
+        let collateral_min = amount
+            .checked_mul(MICRO_COLLATERAL_NUMERATOR)
+            .ok_or(FloatError::MathOverflow)?
+            .checked_div(MICRO_COLLATERAL_DENOMINATOR)
+            .ok_or(FloatError::MathOverflow)?;
+        let collateral_amount = ctx.accounts.borrower_collateral_ata.amount;
+        require!(collateral_amount >= collateral_min, FloatError::InsufficientCollateral);
+
+        let now = Clock::get()?.unix_timestamp;
+        let term_secs: i64 = (term_days as i64) * 24 * 60 * 60;
+        let due_at = now
+            .checked_add(term_secs)
+            .ok_or(FloatError::MathOverflow)?;
+
+        let loan = &mut ctx.accounts.micro_loan;
+        loan.borrower = ctx.accounts.borrower.key();
+        loan.amount = amount;
+        loan.term_days = term_days;
+        loan.collateral_amount = collateral_min;
+        loan.total_repay = amount;
+        loan.due_at = due_at;
+        loan.grace_until = due_at
+            .checked_add(MICRO_GRACE_PERIOD_SECS)
+            .ok_or(FloatError::MathOverflow)?;
+        loan.status = MicroLoanStatus::Active;
+        loan.created_at = now;
+        loan.nonce = nonce;
+        loan.loan_mint = ctx.accounts.loan_mint.key();
+        loan.collateral_mint = ctx.accounts.collateral_mint.key();
+        loan.vault_bump = ctx.bumps.micro_loan;
+        loan.pool = ctx.accounts.pool_state.key();
+
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.borrower_collateral_ata.to_account_info(),
+                    to: ctx.accounts.vault_collateral_ata.to_account_info(),
+                    authority: ctx.accounts.borrower.to_account_info(),
+                },
+            ),
+            collateral_min,
+        )?;
+
+        let pool_bump = ctx.accounts.pool_state.bump;
+        let pool_seeds: &[&[u8]] = &[MICRO_POOL_SEED, &[pool_bump]];
+        let signer_seeds = &[pool_seeds];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.pool_loan_ata.to_account_info(),
+                    to: ctx.accounts.borrower_loan_ata.to_account_info(),
+                    authority: ctx.accounts.pool_state.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            amount,
+        )?;
+
+        emit!(MicroLoanMatched {
+            loan: loan.key(),
+            borrower: loan.borrower,
+            amount,
+            term_days,
+            due_at,
+        });
+        Ok(())
+    }
+
+    /// Borrower repays micro-loan in full; collateral remains locked until withdraw.
+    pub fn repay_micro_loan(ctx: Context<RepayMicroLoan>) -> Result<()> {
+        let loan = &mut ctx.accounts.micro_loan;
+        require!(loan.status == MicroLoanStatus::Active, FloatError::LoanNotActive);
+        require!(
+            ctx.accounts.borrower.key() == loan.borrower,
+            FloatError::Unauthorized
+        );
+
+        token::transfer(
+            CpiContext::new(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.borrower_loan_ata.to_account_info(),
+                    to: ctx.accounts.pool_loan_ata.to_account_info(),
+                    authority: ctx.accounts.borrower.to_account_info(),
+                },
+            ),
+            loan.total_repay,
+        )?;
+
+        loan.status = MicroLoanStatus::Repaid;
+        emit!(MicroLoanRepaid {
+            loan: loan.key(),
+            borrower: loan.borrower,
+            amount: loan.total_repay,
+        });
+        Ok(())
+    }
+
+    /// Liquidate overdue micro-loan; collateral goes to pool.
+    pub fn liquidate_micro_loan(ctx: Context<LiquidateMicroLoan>) -> Result<()> {
+        let loan = &ctx.accounts.micro_loan;
+        require!(loan.status == MicroLoanStatus::Active, FloatError::LoanNotActive);
+
+        let now = Clock::get()?.unix_timestamp;
+        require!(now >= loan.grace_until, FloatError::GracePeriodNotExpired);
+
+        let loan_bump = loan.vault_bump;
+        let loan_seeds: &[&[u8]] = &[
+            MICRO_LOAN_SEED,
+            loan.borrower.as_ref(),
+            loan.loan_mint.as_ref(),
+            &loan.nonce.to_le_bytes(),
+            &[loan_bump],
+        ];
+        let signer_seeds = &[loan_seeds];
+        let collateral_amount = loan.collateral_amount;
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_collateral_ata.to_account_info(),
+                    to: ctx.accounts.pool_collateral_ata.to_account_info(),
+                    authority: ctx.accounts.micro_loan.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            collateral_amount,
+        )?;
+
+        let loan = &mut ctx.accounts.micro_loan;
+        loan.status = MicroLoanStatus::Liquidated;
+
+        emit!(MicroLoanLiquidated {
+            loan: loan.key(),
+            borrower: loan.borrower,
+            collateral_seized: collateral_amount,
+        });
+        Ok(())
+    }
+
+    /// Borrower withdraws collateral after repaying micro-loan.
+    pub fn withdraw_collateral_micro(ctx: Context<WithdrawCollateralMicro>) -> Result<()> {
+        let loan = &ctx.accounts.micro_loan;
+        require!(loan.status == MicroLoanStatus::Repaid, FloatError::LoanNotRepaid);
+        require!(
+            ctx.accounts.borrower.key() == loan.borrower,
+            FloatError::Unauthorized
+        );
+
+        let loan_bump = loan.vault_bump;
+        let loan_seeds: &[&[u8]] = &[
+            MICRO_LOAN_SEED,
+            loan.borrower.as_ref(),
+            loan.loan_mint.as_ref(),
+            &loan.nonce.to_le_bytes(),
+            &[loan_bump],
+        ];
+        let signer_seeds = &[loan_seeds];
+        let collateral_amount = loan.collateral_amount;
+
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.to_account_info(),
+                Transfer {
+                    from: ctx.accounts.vault_collateral_ata.to_account_info(),
+                    to: ctx.accounts.borrower_collateral_ata.to_account_info(),
+                    authority: ctx.accounts.micro_loan.to_account_info(),
+                },
+                signer_seeds,
+            ),
+            collateral_amount,
+        )?;
+
+        let loan = &mut ctx.accounts.micro_loan;
+        loan.status = MicroLoanStatus::CollateralWithdrawn;
+        Ok(())
+    }
 }
 
 // ─────────────────────────────────────────────
@@ -316,20 +585,19 @@ pub mod float {
 // ─────────────────────────────────────────────
 
 #[derive(Accounts)]
-#[instruction(collateral_amount: u64, loan_amount: u64, installments: u8, annual_rate_bps: u64)]
+#[instruction(collateral_amount: u64, loan_amount: u64, installments: u8, annual_rate_bps: u64, nonce: u64)]
 pub struct InitializeLoan<'info> {
     /// The borrower who initiates the loan and pays for account creation.
     #[account(mut)]
     pub borrower: Signer<'info>,
 
-    /// The LoanAccount PDA. Seeded by [LOAN_SEED, borrower, loan_mint, created_at_nonce].
-    /// Using `init` here means each call creates a fresh PDA — borrowers can have
-    /// multiple loans by using different nonces (encoded as a u64 timestamp).
+    /// The LoanAccount PDA. Seeded by [LOAN_SEED, borrower, loan_mint, nonce].
+    /// Each nonce creates a unique PDA so borrowers can have multiple loans.
     #[account(
         init,
         payer = borrower,
         space = LoanAccount::LEN,
-        seeds = [LOAN_SEED, borrower.key().as_ref(), loan_mint.key().as_ref()],
+        seeds = [LOAN_SEED, borrower.key().as_ref(), loan_mint.key().as_ref(), &nonce.to_le_bytes()],
         bump,
     )]
     pub loan: Box<Account<'info, LoanAccount>>,
@@ -393,7 +661,7 @@ pub struct RepayInstallment<'info> {
 
     #[account(
         mut,
-        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref()],
+        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref(), &loan.nonce.to_le_bytes()],
         bump,
         has_one = borrower,
     )]
@@ -435,7 +703,7 @@ pub struct Liquidate<'info> {
 
     #[account(
         mut,
-        seeds = [LOAN_SEED, loan.borrower.as_ref(), loan.loan_mint.as_ref()],
+        seeds = [LOAN_SEED, loan.borrower.as_ref(), loan.loan_mint.as_ref(), &loan.nonce.to_le_bytes()],
         bump,
     )]
     pub loan: Account<'info, LoanAccount>,
@@ -474,7 +742,7 @@ pub struct WithdrawCollateral<'info> {
 
     #[account(
         mut,
-        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref()],
+        seeds = [LOAN_SEED, borrower.key().as_ref(), loan.loan_mint.as_ref(), &loan.nonce.to_le_bytes()],
         bump,
         has_one = borrower,
     )]
@@ -495,6 +763,280 @@ pub struct WithdrawCollateral<'info> {
         associated_token::authority = borrower,
     )]
     pub borrower_collateral_ata: Account<'info, TokenAccount>,
+
+    pub collateral_mint: Account<'info, Mint>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+// ─── AI Micro-Lending contexts ────────────────────────────────────────────
+
+#[derive(Accounts)]
+pub struct InitializeMicroPool<'info> {
+    #[account(mut)]
+    pub payer: Signer<'info>,
+
+    #[account(
+        init,
+        payer = payer,
+        space = PoolState::LEN,
+        seeds = [MICRO_POOL_SEED],
+        bump,
+    )]
+    pub pool_state: Account<'info, PoolState>,
+
+    pub loan_mint: Account<'info, Mint>,
+
+    #[account(
+        init,
+        payer = payer,
+        associated_token::mint = loan_mint,
+        associated_token::authority = pool_state,
+    )]
+    pub pool_loan_ata: Account<'info, TokenAccount>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeAgentConfig<'info> {
+    #[account(mut)]
+    pub admin: Signer<'info>,
+
+    #[account(
+        init,
+        payer = admin,
+        space = AgentConfig::LEN,
+        seeds = [AGENT_CONFIG_SEED],
+        bump,
+    )]
+    pub agent_config: Account<'info, AgentConfig>,
+
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdateAgentConfig<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [AGENT_CONFIG_SEED],
+        bump,
+    )]
+    pub agent_config: Account<'info, AgentConfig>,
+}
+
+#[derive(Accounts)]
+#[instruction(amount: u64)]
+pub struct DepositToPool<'info> {
+    #[account(mut)]
+    pub depositor: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [MICRO_POOL_SEED],
+        bump = pool_state.bump,
+    )]
+    pub pool_state: Account<'info, PoolState>,
+
+    #[account(
+        mut,
+        associated_token::mint = loan_mint,
+        associated_token::authority = depositor,
+    )]
+    pub depositor_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = loan_mint,
+        associated_token::authority = pool_state,
+    )]
+    pub pool_loan_ata: Account<'info, TokenAccount>,
+
+    pub loan_mint: Account<'info, Mint>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(amount: u64, term_days: u8, nonce: u64)]
+pub struct AgentMatchLoan<'info> {
+    #[account(mut)]
+    pub agent: Signer<'info>,
+
+    #[account(
+        seeds = [AGENT_CONFIG_SEED],
+        bump,
+    )]
+    pub agent_config: Box<Account<'info, AgentConfig>>,
+
+    #[account(mut)]
+    pub borrower: Signer<'info>,
+
+    #[account(
+        init,
+        payer = agent,
+        space = MicroLoan::LEN,
+        seeds = [MICRO_LOAN_SEED, borrower.key().as_ref(), loan_mint.key().as_ref(), &nonce.to_le_bytes()],
+        bump,
+    )]
+    pub micro_loan: Box<Account<'info, MicroLoan>>,
+
+    #[account(
+        mut,
+        seeds = [MICRO_POOL_SEED],
+        bump = pool_state.bump,
+    )]
+    pub pool_state: Box<Account<'info, PoolState>>,
+
+    #[account(
+        mut,
+        associated_token::mint = loan_mint,
+        associated_token::authority = pool_state,
+    )]
+    pub pool_loan_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        associated_token::mint = collateral_mint,
+        associated_token::authority = borrower,
+    )]
+    pub borrower_collateral_ata: Box<Account<'info, TokenAccount>>,
+
+    #[account(
+        mut,
+        associated_token::mint = loan_mint,
+        associated_token::authority = borrower,
+    )]
+    pub borrower_loan_ata: Box<Account<'info, TokenAccount>>,
+
+    /// Vault ATA (authority = micro_loan PDA). Client must create before first use; or create via CPI in handler.
+    #[account(
+        mut,
+        associated_token::mint = collateral_mint,
+        associated_token::authority = micro_loan,
+    )]
+    pub vault_collateral_ata: Box<Account<'info, TokenAccount>>,
+
+    pub collateral_mint: Box<Account<'info, Mint>>,
+    pub loan_mint: Box<Account<'info, Mint>>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct RepayMicroLoan<'info> {
+    #[account(mut)]
+    pub borrower: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [MICRO_LOAN_SEED, micro_loan.borrower.as_ref(), micro_loan.loan_mint.as_ref(), &micro_loan.nonce.to_le_bytes()],
+        bump,
+        has_one = borrower,
+    )]
+    pub micro_loan: Account<'info, MicroLoan>,
+
+    #[account(
+        mut,
+        associated_token::mint = loan_mint,
+        associated_token::authority = borrower,
+    )]
+    pub borrower_loan_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = loan_mint,
+        associated_token::authority = pool_state,
+    )]
+    pub pool_loan_ata: Account<'info, TokenAccount>,
+
+    #[account(seeds = [MICRO_POOL_SEED], bump = pool_state.bump)]
+    pub pool_state: Account<'info, PoolState>,
+
+    pub loan_mint: Account<'info, Mint>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct LiquidateMicroLoan<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [MICRO_LOAN_SEED, micro_loan.borrower.as_ref(), micro_loan.loan_mint.as_ref(), &micro_loan.nonce.to_le_bytes()],
+        bump,
+    )]
+    pub micro_loan: Account<'info, MicroLoan>,
+
+    #[account(
+        mut,
+        associated_token::mint = collateral_mint,
+        associated_token::authority = micro_loan,
+    )]
+    pub vault_collateral_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = collateral_mint,
+        associated_token::authority = pool_state,
+    )]
+    pub pool_collateral_ata: Account<'info, TokenAccount>,
+
+    #[account(seeds = [MICRO_POOL_SEED], bump = pool_state.bump)]
+    pub pool_state: Account<'info, PoolState>,
+
+    pub collateral_mint: Account<'info, Mint>,
+
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawCollateralMicro<'info> {
+    #[account(mut)]
+    pub borrower: Signer<'info>,
+
+    #[account(
+        mut,
+        seeds = [MICRO_LOAN_SEED, micro_loan.borrower.as_ref(), micro_loan.loan_mint.as_ref(), &micro_loan.nonce.to_le_bytes()],
+        bump,
+        has_one = borrower,
+    )]
+    pub micro_loan: Account<'info, MicroLoan>,
+
+    #[account(
+        mut,
+        associated_token::mint = collateral_mint,
+        associated_token::authority = micro_loan,
+    )]
+    pub vault_collateral_ata: Account<'info, TokenAccount>,
+
+    #[account(
+        mut,
+        associated_token::mint = collateral_mint,
+        associated_token::authority = borrower,
+    )]
+    pub borrower_collateral_ata: Account<'info, TokenAccount>,
+
+    #[account(seeds = [MICRO_POOL_SEED], bump = pool_state.bump)]
+    pub pool_state: Account<'info, PoolState>,
 
     pub collateral_mint: Account<'info, Mint>,
 
@@ -551,6 +1093,9 @@ pub struct LoanAccount {
 
     /// Bump seed for the vault ATA PDA (needed for signing CPI).
     pub vault_bump: u8,             // 1
+
+    /// Nonce used in PDA derivation (allows multiple loans per borrower per mint).
+    pub nonce: u64,                 // 8
 }
 
 impl LoanAccount {
@@ -570,12 +1115,70 @@ impl LoanAccount {
         + 8   // created_at
         + 8   // annual_rate_bps
         + 1   // vault_bump
-        + 64; // padding for future fields
+        + 8   // nonce
+        + 56; // padding for future fields
 }
 
 /// Lifecycle status of a loan.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Default)]
 pub enum LoanStatus {
+    #[default]
+    Active,
+    Repaid,
+    Liquidated,
+    CollateralWithdrawn,
+}
+
+// ─── AI Micro-Lending state ───────────────────────────────────────────────
+
+#[account]
+#[derive(Default)]
+pub struct PoolState {
+    pub bump: u8,
+    pub total_deposited: u64,
+}
+
+impl PoolState {
+    pub const LEN: usize = 8 + 1 + 8;
+}
+
+#[account]
+#[derive(Default)]
+pub struct AgentConfig {
+    pub authorized_agent: Pubkey,
+}
+
+impl AgentConfig {
+    pub const LEN: usize = 8 + 32;
+}
+
+#[account]
+#[derive(Default)]
+pub struct MicroLoan {
+    pub borrower: Pubkey,
+    pub amount: u64,
+    pub term_days: u8,
+    pub collateral_amount: u64,
+    pub total_repay: u64,
+    pub due_at: i64,
+    pub grace_until: i64,
+    pub status: MicroLoanStatus,
+    pub created_at: i64,
+    pub nonce: u64,
+    pub loan_mint: Pubkey,
+    pub collateral_mint: Pubkey,
+    pub vault_bump: u8,
+    pub pool: Pubkey,
+}
+
+impl MicroLoan {
+    pub const LEN: usize = 8
+        + 32 + 8 + 1 + 8 + 8 + 8 + 8 + 1 + 8 + 8 + 32 + 32 + 1 + 32
+        + 32; // padding
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq, Default)]
+pub enum MicroLoanStatus {
     #[default]
     Active,
     Repaid,
@@ -617,6 +1220,36 @@ pub struct CollateralWithdrawn {
     pub loan: Pubkey,
     pub borrower: Pubkey,
     pub collateral_returned: u64,
+}
+
+#[event]
+pub struct MicroPoolDeposit {
+    pub depositor: Pubkey,
+    pub amount: u64,
+    pub new_total: u64,
+}
+
+#[event]
+pub struct MicroLoanMatched {
+    pub loan: Pubkey,
+    pub borrower: Pubkey,
+    pub amount: u64,
+    pub term_days: u8,
+    pub due_at: i64,
+}
+
+#[event]
+pub struct MicroLoanRepaid {
+    pub loan: Pubkey,
+    pub borrower: Pubkey,
+    pub amount: u64,
+}
+
+#[event]
+pub struct MicroLoanLiquidated {
+    pub loan: Pubkey,
+    pub borrower: Pubkey,
+    pub collateral_seized: u64,
 }
 
 // ─────────────────────────────────────────────
