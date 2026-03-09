@@ -24,6 +24,29 @@ const APP_IDENTITY = {
 
 const MOCK_PUBLIC_KEY = new PublicKey("11111111111111111111111111111111");
 
+function formatTxError(err: unknown): string {
+  if (err instanceof Error) {
+    const anyErr = err as Error & {
+      logs?: string[];
+      transactionLogs?: string[];
+      transactionMessage?: string;
+      cause?: unknown;
+    };
+    const logs = anyErr.logs ?? anyErr.transactionLogs;
+    const causeMsg =
+      anyErr.cause instanceof Error ? anyErr.cause.message : anyErr.cause ? String(anyErr.cause) : "";
+    return [
+      anyErr.message,
+      anyErr.transactionMessage ? `tx: ${anyErr.transactionMessage}` : "",
+      logs?.length ? `logs:\n${logs.join("\n")}` : "",
+      causeMsg ? `cause: ${causeMsg}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(err);
+}
+
 export function useWallet() {
   const [publicKey, setPublicKey] = useState<PublicKey | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
@@ -84,6 +107,9 @@ export function useWallet() {
       // 1. Build the transaction BEFORE opening the MWA session
       console.log("[MWA] Building transaction (before session)...");
       const tx = await buildTx(publicKey);
+      const { blockhash } = await connection.getLatestBlockhash("confirmed");
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = publicKey;
       console.log("[MWA] Transaction built, instructions:", tx.instructions.length);
       console.log("[MWA] Fee payer:", tx.feePayer?.toBase58());
       console.log("[MWA] Blockhash:", tx.recentBlockhash);
@@ -150,18 +176,23 @@ export function useWallet() {
       // 5. Send the signed transaction to the RPC ourselves
       console.log("[MWA] Sending signed transaction to devnet...");
       const rawTx = signedTxs[0].serialize();
-      const signature = await connection.sendRawTransaction(rawTx, {
-        skipPreflight,
-        preflightCommitment: "confirmed",
-      });
-      console.log("[MWA] ✓ Submitted! Signature:", signature);
+      try {
+        const signature = await connection.sendRawTransaction(rawTx, {
+          skipPreflight,
+          preflightCommitment: "confirmed",
+        });
+        console.log("[MWA] ✓ Submitted! Signature:", signature);
 
-      // Wait for confirmation
-      console.log("[MWA] Waiting for confirmation...");
-      await connection.confirmTransaction(signature, "confirmed");
-      console.log("[MWA] ✓ Confirmed!");
-
-      return { signature };
+        // Wait for confirmation
+        console.log("[MWA] Waiting for confirmation...");
+        await connection.confirmTransaction(signature, "confirmed");
+        console.log("[MWA] ✓ Confirmed!");
+        return { signature };
+      } catch (sendErr) {
+        const details = formatTxError(sendErr);
+        console.error("[MWA] send/confirm failed:\n", details);
+        throw new Error(details);
+      }
     },
     [hasNativeMwa, publicKey, authToken]
   );

@@ -60,6 +60,33 @@ AGENT_KEYPAIR=./agent.json BORROWER=<borrower_pubkey> AMOUNT=10000000 TERM_DAYS=
 
 (Implement `scripts/agent-match.js` to build and send the tx; see below.)
 
+## 4.1 AI agent with Solana Agent Kit
+
+Float now includes `program/scripts/ai-agent.js` wired to **Solana Agent Kit** (`solana-agent-kit` + token/misc plugins) for on-chain signal checks before executing `agent_match_loan`.
+
+Install dependencies:
+
+```bash
+cd program
+npm install
+```
+
+Run AI decision + execution:
+
+```bash
+cd program
+OPENAI_API_KEY=sk-... \
+AGENT_KEYPAIR=./demo-wallet.json \
+BORROWER=<borrower_pubkey> \
+AMOUNT=10000000 TERM_DAYS=3 NONCE=1 \
+node scripts/ai-agent.js
+```
+
+What uses Solana Agent Kit:
+- Borrower USDC balance check (`get_balance_other`)
+- Pool liquidity check (`get_balance_other`)
+- Plugin-ready architecture for adding extra risk signals later
+
 ## 5. App (Expo / React Native)
 
 ```bash
@@ -71,6 +98,7 @@ npx expo start
 
 - **Home**: Classic Float loans (collateral → loan → repay → withdraw).
 - **AI** tab: Pool balance, **Deposit to pool**, **Set agent preferences**, **Agent status**, and **My micro-loans** (Repay / Withdraw collateral after repay).
+- **Agent status** now supports real execution: enter amount/term/nonce and run `agent_match_loan` directly from the connected authorized agent wallet (self-agent mode).
 
 ## 6. Testing checklist (Devnet)
 

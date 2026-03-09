@@ -11,7 +11,7 @@ export const FLOAT_PROGRAM_ID = new PublicKey(
 
 // Devnet USDC mint (Circle's official devnet USDC — use with faucet.circle.com).
 export const USDC_MINT = new PublicKey(
-  "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+  "7whbViYZqoGxZ7B32crtGEcyCJEDZNPrqSQxm9LUUtGX"
 );
 
 // ─── PDA Seeds ────────────────────────────────────────────────────────────────

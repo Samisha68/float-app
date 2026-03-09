@@ -6,7 +6,7 @@
 
 Float lets users lock SOL/USDC as collateral, receive a USDC loan, and repay it in fixed monthly installments (EMIs). Miss the grace period → collateral is liquidated. Repay fully → collateral returned.
 
-**AI innovation (hackathon):** Lenders deposit USDC into a shared micro-pool; an on-chain–authorized agent matches micro-loans ($1–$100, 1–7 days) with 110% mini-collateral. Set preferences (amount, APR, risk), human override (pause agent), caps ($100/loan, 10% pool exposure). MVP uses rule-based logic; production path: Solana Agent Kit / Eliza + default-risk signals.
+**AI innovation (hackathon):** Lenders deposit USDC into a shared micro-pool; an on-chain–authorized agent matches micro-loans ($1–$100, 1–7 days) with 110% mini-collateral. Set preferences (amount, APR, risk), human override (pause agent), caps ($100/loan, 10% pool exposure). The AI script now integrates **Solana Agent Kit** for live on-chain balance and liquidity signals, with the existing agent transaction flow kept on-chain.
 
 ---
 

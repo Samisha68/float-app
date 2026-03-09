@@ -17,7 +17,9 @@ const {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PROGRAM_ID       = new PublicKey("AeWSncwhRY2TyRnM7UByjhmmcgE8rrbMs9y8vwJomgmX");
-const USDC_MINT        = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+const USDC_MINT        = new PublicKey(
+  process.env.LOAN_MINT || "7whbViYZqoGxZ7B32crtGEcyCJEDZNPrqSQxm9LUUtGX"
+);
 const MICRO_POOL_SEED  = Buffer.from("micro_pool");
 const AGENT_CFG_SEED   = Buffer.from("agent_config");
 
@@ -45,7 +47,13 @@ async function sendAndConfirm(connection, tx, signers) {
   tx.feePayer = signers[0].publicKey;
   tx.sign(...signers);
   const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight: false });
-  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  const conf = await connection.confirmTransaction(
+    { signature: sig, blockhash, lastValidBlockHeight },
+    "confirmed"
+  );
+  if (conf.value.err) {
+    throw new Error(`Transaction ${sig} failed: ${JSON.stringify(conf.value.err)}`);
+  }
   return sig;
 }
 

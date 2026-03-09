@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -6,53 +6,113 @@ import {
   TouchableOpacity,
   ScrollView,
   Animated,
+  TextInput,
+  Alert,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { colors, radius, typography, spacing } from "../theme/theme";
+import { Connection, PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddress } from "@solana/spl-token";
+import * as anchor from "@coral-xyz/anchor";
+import { useWalletContext } from "../context/WalletContext";
+import { useMicroPool } from "../hooks/useMicroPool";
+import { IDL } from "../idl/float";
+import {
+  AGENT_CONFIG_SEED,
+  DEVNET_RPC,
+  FLOAT_PROGRAM_ID,
+  MICRO_COLLATERAL_RATIO,
+  MICRO_LOAN_MAX_USDC,
+  MICRO_LOAN_SEED,
+  MICRO_POOL_SEED,
+  MICRO_TERM_DAYS_MAX,
+  MICRO_TERM_DAYS_MIN,
+  USDC_MINT,
+} from "../utils/constants";
+import { colors, radius, spacing, typography } from "../theme/theme";
 
 interface Props {
   navigation: any;
 }
 
-// ── AI agent reasoning steps (simulated for MVP demo) ─────────────────────────
-interface AgentStep {
-  ms: number;        // delay from "run" press
-  phase: "scan" | "check" | "ai" | "exec" | "done" | "reject";
-  icon: string;
+type Phase = "scan" | "check" | "ai" | "exec" | "done" | "reject";
+interface AgentLog {
+  phase: Phase;
   text: string;
 }
 
-const AGENT_STEPS: AgentStep[] = [
-  { ms: 600,  phase: "scan",   icon: "◎",  text: "Scanning on-chain for borrow requests…" },
-  { ms: 1800, phase: "scan",   icon: "◇",  text: "Found: 10 USDC / 3 days / nonce=1 (borrower: 4xKj…mP9r)" },
-  { ms: 3000, phase: "check",  icon: "◈",  text: "Checking wallet age → first tx: 47 days ago ✓" },
-  { ms: 4100, phase: "check",  icon: "◈",  text: "Checking USDC balance → 15.40 USDC (need 11.00 ✓)" },
-  { ms: 5200, phase: "check",  icon: "◈",  text: "Checking pool liquidity → 487 USDC available ✓" },
-  { ms: 6500, phase: "ai",     icon: "◆",  text: "GPT-4o: wallet age ≥ 30 days → LOW risk" },
-  { ms: 7400, phase: "ai",     icon: "◆",  text: "GPT-4o decision: APPROVE — collateral sufficient" },
-  { ms: 8600, phase: "exec",   icon: "✦",  text: "Submitting agent_match_loan on-chain…" },
-  { ms: 10200, phase: "done",  icon: "✓",  text: "Loan matched! Tx: 5MXz…qR7k confirmed." },
-];
-
-const PHASE_COLORS: Record<AgentStep["phase"], string> = {
-  scan:   colors.primaryLight,
-  check:  colors.warning,
-  ai:     colors.info,
-  exec:   colors.primary,
-  done:   colors.success,
+const PHASE_COLORS: Record<Phase, string> = {
+  scan: colors.primaryLight,
+  check: colors.warning,
+  ai: colors.info,
+  exec: colors.primary,
+  done: colors.success,
   reject: colors.error,
 };
 
+function parseUsdcInput(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed * 1e6);
+}
+
+function computeRiskScore(ageDays: number, collateralOk: boolean, poolOk: boolean): number {
+  let score = 0.2;
+  if (ageDays < 7) score += 0.55;
+  else if (ageDays < 30) score += 0.25;
+  if (!collateralOk) score += 0.2;
+  if (!poolOk) score += 0.1;
+  return Math.min(1, Number(score.toFixed(2)));
+}
+
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) {
+    const anyErr = err as Error & {
+      logs?: string[];
+      transactionLogs?: string[];
+      transactionMessage?: string;
+      cause?: unknown;
+    };
+    const logs = anyErr.logs ?? anyErr.transactionLogs;
+    const cause =
+      anyErr.cause instanceof Error ? anyErr.cause.message : anyErr.cause ? String(anyErr.cause) : "";
+    return [
+      anyErr.message,
+      anyErr.transactionMessage ? `tx: ${anyErr.transactionMessage}` : "",
+      logs?.length ? `logs: ${logs.join(" | ")}` : "",
+      cause ? `cause: ${cause}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+  return String(err);
+}
+
 export function AgentStatusScreen({ navigation }: Props) {
+  const { publicKey, signAndSend } = useWalletContext();
+  const { refetch: refetchPool } = useMicroPool();
+
   const [paused, setPaused] = useState(false);
   const [running, setRunning] = useState(false);
-  const [logEntries, setLogEntries] = useState<AgentStep[]>([]);
-  const scrollRef = useRef<ScrollView>(null);
-  const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const [logs, setLogs] = useState<AgentLog[]>([]);
+  const [amountText, setAmountText] = useState("10");
+  const [termDays, setTermDays] = useState("3");
+  const [nonceText, setNonceText] = useState(String(Date.now() % 1000000));
 
-  // Pulse animation while running
-  useEffect(() => {
+  const scrollRef = useRef<ScrollView>(null);
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const pausedRef = useRef(false);
+
+  const amountLamports = useMemo(() => parseUsdcInput(amountText), [amountText]);
+  const amountUsdc = amountLamports / 1e6;
+  const term = Number(termDays);
+  const nonce = Number(nonceText);
+
+  const pushLog = (phase: Phase, text: string) => {
+    setLogs((prev) => [...prev, { phase, text }]);
+    setTimeout(() => scrollRef.current?.scrollToEnd({ animated: true }), 30);
+  };
+
+  React.useEffect(() => {
     if (running) {
       Animated.loop(
         Animated.sequence([
@@ -60,61 +120,192 @@ export function AgentStatusScreen({ navigation }: Props) {
           Animated.timing(pulseAnim, { toValue: 1, duration: 700, useNativeDriver: true }),
         ])
       ).start();
-    } else {
-      pulseAnim.stopAnimation();
-      pulseAnim.setValue(1);
+      return;
     }
-  }, [running]);
-
-  const clearTimers = () => {
-    timersRef.current.forEach(clearTimeout);
-    timersRef.current = [];
-  };
-
-  const handleRun = () => {
-    if (paused) return;
-    clearTimers();
-    setLogEntries([]);
-    setRunning(true);
-
-    AGENT_STEPS.forEach((step) => {
-      const t = setTimeout(() => {
-        setLogEntries((prev) => [...prev, step]);
-        scrollRef.current?.scrollToEnd({ animated: true });
-        if (step.phase === "done" || step.phase === "reject") {
-          setRunning(false);
-        }
-      }, step.ms);
-      timersRef.current.push(t);
-    });
-  };
+    pulseAnim.stopAnimation();
+    pulseAnim.setValue(1);
+  }, [running, pulseAnim]);
 
   const handlePause = () => {
     const next = !paused;
+    pausedRef.current = next;
     setPaused(next);
-    if (next) {
-      clearTimers();
+    if (next && running) {
+      pushLog("reject", "Paused by human override.");
       setRunning(false);
     }
   };
 
-  // Cleanup on unmount
-  useEffect(() => () => clearTimers(), []);
+  const failWith = (message: string) => {
+    pushLog("reject", message);
+    setRunning(false);
+  };
 
-  const agentStatus = paused
+  const handleRun = async () => {
+    if (!publicKey) {
+      Alert.alert("Wallet required", "Connect wallet first.");
+      return;
+    }
+    if (paused) return;
+    if (!Number.isInteger(term) || term < MICRO_TERM_DAYS_MIN || term > MICRO_TERM_DAYS_MAX) {
+      Alert.alert("Invalid term", `Term must be ${MICRO_TERM_DAYS_MIN}-${MICRO_TERM_DAYS_MAX} days.`);
+      return;
+    }
+    if (!Number.isInteger(nonce) || nonce <= 0) {
+      Alert.alert("Invalid nonce", "Nonce must be a positive integer.");
+      return;
+    }
+    if (amountLamports <= 0 || amountLamports > MICRO_LOAN_MAX_USDC) {
+      Alert.alert("Invalid amount", "Loan amount must be between 0 and 100 USDC.");
+      return;
+    }
+
+    setLogs([]);
+    setRunning(true);
+    pausedRef.current = false;
+
+    const connection = new Connection(DEVNET_RPC, "confirmed");
+    const collateralLamports = Math.ceil(amountLamports * MICRO_COLLATERAL_RATIO);
+    const collateralUsdc = collateralLamports / 1e6;
+
+    try {
+      pushLog("scan", "Scanning request in self-agent mode (agent = borrower).");
+      pushLog("check", `Requested: ${amountUsdc.toFixed(2)} USDC / ${term} day(s), nonce=${nonce}`);
+
+      if (pausedRef.current) return failWith("Execution paused before checks.");
+
+      const [poolStatePda] = PublicKey.findProgramAddressSync([MICRO_POOL_SEED], FLOAT_PROGRAM_ID);
+      const [agentConfigPda] = PublicKey.findProgramAddressSync([AGENT_CONFIG_SEED], FLOAT_PROGRAM_ID);
+      const nonceBuf = Buffer.alloc(8);
+      nonceBuf.writeBigUInt64LE(BigInt(nonce));
+      const [microLoanPda] = PublicKey.findProgramAddressSync(
+        [MICRO_LOAN_SEED, publicKey.toBuffer(), USDC_MINT.toBuffer(), nonceBuf],
+        FLOAT_PROGRAM_ID
+      );
+
+      const poolLoanAta = await getAssociatedTokenAddress(USDC_MINT, poolStatePda, true);
+      const borrowerCollateralAta = await getAssociatedTokenAddress(USDC_MINT, publicKey);
+      const borrowerLoanAta = borrowerCollateralAta;
+      const vaultCollateralAta = await getAssociatedTokenAddress(USDC_MINT, microLoanPda, true);
+
+      const agentCfg = await connection.getAccountInfo(agentConfigPda);
+      if (!agentCfg?.data || agentCfg.data.length < 8 + 32) {
+        return failWith("Agent config not initialized on-chain.");
+      }
+      const authorizedAgent = new PublicKey(agentCfg.data.subarray(8, 40));
+      if (!authorizedAgent.equals(publicKey)) {
+        return failWith("Connected wallet is not the authorized agent in agent_config.");
+      }
+      pushLog("check", "Authorized agent check passed.");
+
+      if (pausedRef.current) return failWith("Execution paused before risk checks.");
+
+      const signatures = await connection.getSignaturesForAddress(publicKey, { limit: 1000 });
+      const oldestBlockTime = signatures.length > 0 ? signatures[signatures.length - 1].blockTime ?? null : null;
+      const ageDays = oldestBlockTime
+        ? Math.floor((Date.now() / 1000 - oldestBlockTime) / 86400)
+        : 0;
+      pushLog("check", `Wallet age: ${ageDays} day(s).`);
+
+      let borrowerBalanceLamports = 0;
+      try {
+        const bal = await connection.getTokenAccountBalance(borrowerCollateralAta);
+        borrowerBalanceLamports = Number(bal.value.amount);
+      } catch {
+        borrowerBalanceLamports = 0;
+      }
+      const borrowerBalanceUsdc = borrowerBalanceLamports / 1e6;
+      pushLog("check", `Borrower USDC: ${borrowerBalanceUsdc.toFixed(2)} (need ${collateralUsdc.toFixed(2)}).`);
+
+      let poolBalanceLamports = 0;
+      try {
+        const bal = await connection.getTokenAccountBalance(poolLoanAta);
+        poolBalanceLamports = Number(bal.value.amount);
+      } catch {
+        poolBalanceLamports = 0;
+      }
+      const poolBalanceUsdc = poolBalanceLamports / 1e6;
+      pushLog("check", `Pool USDC: ${poolBalanceUsdc.toFixed(2)} (need ${amountUsdc.toFixed(2)}).`);
+
+      const collateralOk = borrowerBalanceLamports >= collateralLamports;
+      const poolOk = poolBalanceLamports >= amountLamports;
+      const ageOk = ageDays >= 7;
+      const riskScore = computeRiskScore(ageDays, collateralOk, poolOk);
+
+      if (!ageOk || !collateralOk || !poolOk) {
+        const reasons: string[] = [];
+        if (!ageOk) reasons.push("wallet age < 7 days");
+        if (!collateralOk) reasons.push("insufficient collateral balance");
+        if (!poolOk) reasons.push("insufficient pool liquidity");
+        return failWith(`AI rejected (${riskScore.toFixed(2)}): ${reasons.join(", ")}.`);
+      }
+
+      pushLog("ai", `AI approved (${riskScore.toFixed(2)}): risk checks passed.`);
+      if (pausedRef.current) return failWith("Execution paused before transaction.");
+
+      pushLog("exec", "Submitting agent_match_loan transaction...");
+      const result = await signAndSend(async (walletPubkey) => {
+        const program = new anchor.Program(
+          IDL as unknown as anchor.Idl,
+          FLOAT_PROGRAM_ID,
+          new anchor.AnchorProvider(
+            connection,
+            { publicKey: walletPubkey, signTransaction: async (t) => t, signAllTransactions: async (t) => t },
+            { commitment: "confirmed" }
+          )
+        );
+        return program.methods
+          .agentMatchLoan(new anchor.BN(amountLamports), term, new anchor.BN(nonce))
+          .accounts({
+            agent: walletPubkey,
+            agentConfig: agentConfigPda,
+            borrower: walletPubkey,
+            microLoan: microLoanPda,
+            poolState: poolStatePda,
+            poolLoanAta,
+            borrowerCollateralAta,
+            borrowerLoanAta,
+            vaultCollateralAta,
+            collateralMint: USDC_MINT,
+            loanMint: USDC_MINT,
+            tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+            associatedTokenProgram: anchor.utils.token.ASSOCIATED_PROGRAM_ID,
+            systemProgram: anchor.web3.SystemProgram.programId,
+            rent: anchor.web3.SYSVAR_RENT_PUBKEY,
+          })
+          .transaction();
+      });
+
+      pushLog("done", `Loan matched on-chain. Tx: ${result.signature.slice(0, 8)}...`);
+      setNonceText(String((Date.now() + Math.floor(Math.random() * 1000)) % 1000000));
+      refetchPool();
+      setRunning(false);
+    } catch (e: unknown) {
+      const message = extractErrorMessage(e);
+      console.error("[AgentStatus] Execution failed:\n", message, "\nRaw:", e);
+      failWith(`Execution failed: ${message}`);
+    }
+  };
+
+  const latestPhase = logs[logs.length - 1]?.phase;
+  const statusText = paused
     ? "Paused (human override)"
     : running
-    ? "Running…"
-    : logEntries.length > 0
-    ? logEntries[logEntries.length - 1].phase === "done" ? "Matched" : "Idle"
+    ? "Running..."
+    : latestPhase === "done"
+    ? "Matched"
+    : latestPhase === "reject"
+    ? "Rejected"
     : "Idle";
 
   const statusColor = paused
     ? colors.warning
     : running
     ? colors.primaryLight
-    : logEntries[logEntries.length - 1]?.phase === "done"
+    : latestPhase === "done"
     ? colors.success
+    : latestPhase === "reject"
+    ? colors.error
     : colors.textMuted;
 
   return (
@@ -130,24 +321,52 @@ export function AgentStatusScreen({ navigation }: Props) {
 
         <Text style={styles.title}>Agent status</Text>
         <Text style={styles.hint}>
-          AI agent (GPT-4o + Solana Agent Kit). Off-chain decisions, on-chain execution.
+          Real execution mode. This runs risk checks and submits `agentMatchLoan` on-chain.
         </Text>
 
-        {/* Status card */}
         <View style={styles.statusCard}>
           <View style={styles.statusRow}>
             <Text style={styles.statusLabel}>STATUS</Text>
             <Animated.View style={[styles.statusDot, { backgroundColor: statusColor, opacity: running ? pulseAnim : 1 }]} />
           </View>
-          <Text style={[styles.statusValue, { color: statusColor }]}>{agentStatus}</Text>
+          <Text style={[styles.statusValue, { color: statusColor }]}>{statusText}</Text>
           <View style={styles.capRow}>
             <Text style={styles.capItem}>Cap: $100 / loan</Text>
             <Text style={styles.capDivider}>·</Text>
-            <Text style={styles.capItem}>Max: 10% pool exposure</Text>
+            <Text style={styles.capItem}>Self-agent mode</Text>
           </View>
         </View>
 
-        {/* Controls */}
+        <View style={styles.formCard}>
+          <Text style={styles.formLabel}>Loan amount (USDC)</Text>
+          <TextInput
+            value={amountText}
+            onChangeText={setAmountText}
+            placeholder="10"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="decimal-pad"
+            style={styles.input}
+          />
+          <Text style={styles.formLabel}>Term (days, 1-7)</Text>
+          <TextInput
+            value={termDays}
+            onChangeText={setTermDays}
+            placeholder="3"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+            style={styles.input}
+          />
+          <Text style={styles.formLabel}>Nonce</Text>
+          <TextInput
+            value={nonceText}
+            onChangeText={setNonceText}
+            placeholder="1"
+            placeholderTextColor={colors.textMuted}
+            keyboardType="number-pad"
+            style={styles.input}
+          />
+        </View>
+
         <View style={styles.controls}>
           <TouchableOpacity
             style={[styles.runBtn, (paused || running) && styles.runBtnDisabled]}
@@ -169,34 +388,20 @@ export function AgentStatusScreen({ navigation }: Props) {
           </TouchableOpacity>
         </View>
 
-        {/* Reasoning log */}
-        {logEntries.length > 0 && (
+        {logs.length > 0 && (
           <View style={styles.logCard}>
-            <Text style={styles.logTitle}>AGENT REASONING LOG</Text>
-            {logEntries.map((entry, i) => (
-              <View key={i} style={styles.logRow}>
-                <Text style={[styles.logIcon, { color: PHASE_COLORS[entry.phase] }]}>
-                  {entry.icon}
-                </Text>
-                <Text style={[styles.logText, { color: entry.phase === "done" ? colors.success : entry.phase === "reject" ? colors.error : colors.text }]}>
-                  {entry.text}
-                </Text>
+            <Text style={styles.logTitle}>AGENT LOG</Text>
+            {logs.map((entry, index) => (
+              <View key={`${entry.phase}-${index}`} style={styles.logRow}>
+                <Text style={[styles.logIcon, { color: PHASE_COLORS[entry.phase] }]}>●</Text>
+                <Text style={styles.logText}>{entry.text}</Text>
               </View>
             ))}
-            {running && (
-              <View style={styles.logRow}>
-                <Animated.Text style={[styles.logIcon, { color: colors.primaryLight, opacity: pulseAnim }]}>
-                  ◌
-                </Animated.Text>
-                <Text style={styles.logCursor}>Thinking…</Text>
-              </View>
-            )}
           </View>
         )}
 
         <Text style={styles.footer}>
-          Human override: pause the agent to halt new loan matches at any time.
-          In production this runs continuously, 24/7.
+          Requires wallet to be the authorized on-chain agent. If not, initialize agent config with this wallet first.
         </Text>
       </ScrollView>
     </SafeAreaView>
@@ -208,16 +413,13 @@ const styles = StyleSheet.create({
   scroll: { padding: spacing.xl, paddingBottom: spacing.xxxl },
   backBtn: { marginBottom: spacing.lg },
   backText: { color: colors.primaryLight, fontSize: 16, fontWeight: "600" },
-
   title: { ...typography.h1, color: colors.text, marginBottom: spacing.sm },
-  hint: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.xxl, lineHeight: 20 },
-
-  // Status card
+  hint: { color: colors.textMuted, fontSize: 13, marginBottom: spacing.xl, lineHeight: 20 },
   statusCard: {
     backgroundColor: colors.bgCard,
     borderRadius: radius.xl,
     padding: spacing.xl,
-    marginBottom: spacing.xl,
+    marginBottom: spacing.lg,
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
   },
@@ -228,8 +430,26 @@ const styles = StyleSheet.create({
   capRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   capItem: { color: colors.textMuted, fontSize: 12 },
   capDivider: { color: colors.surfaceBorder, fontSize: 12 },
-
-  // Controls
+  formCard: {
+    backgroundColor: colors.bgCard,
+    borderRadius: radius.xl,
+    padding: spacing.xl,
+    marginBottom: spacing.xl,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+  },
+  formLabel: { color: colors.textMuted, fontSize: 12, marginBottom: spacing.sm, textTransform: "uppercase" },
+  input: {
+    backgroundColor: colors.bgInput,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.surfaceBorder,
+    color: colors.text,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    fontSize: 16,
+    marginBottom: spacing.md,
+  },
   controls: { flexDirection: "row", gap: spacing.md, marginBottom: spacing.xl },
   runBtn: {
     flex: 1,
@@ -252,21 +472,21 @@ const styles = StyleSheet.create({
   pauseBtnActive: { backgroundColor: colors.warningMuted, borderColor: colors.warning },
   pauseBtnText: { color: colors.text, fontSize: 15, fontWeight: "600" },
   pauseBtnTextActive: { color: colors.warning },
-
-  // Reasoning log
   logCard: {
     backgroundColor: colors.bgCard,
     borderRadius: radius.xl,
     padding: spacing.xl,
-    marginBottom: spacing.xl,
     borderWidth: 1,
     borderColor: colors.surfaceBorder,
   },
-  logTitle: { ...typography.label, color: colors.textMuted, marginBottom: spacing.lg },
-  logRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.md, gap: spacing.md },
-  logIcon: { fontSize: 14, marginTop: 1, width: 16 },
-  logText: { flex: 1, fontSize: 13, lineHeight: 20, fontFamily: "monospace" },
-  logCursor: { flex: 1, fontSize: 13, color: colors.textMuted, fontStyle: "italic" },
-
-  footer: { color: colors.textMuted, fontSize: 12, lineHeight: 20, textAlign: "center" },
+  logTitle: { ...typography.label, color: colors.textMuted, marginBottom: spacing.md },
+  logRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: spacing.sm },
+  logIcon: { width: 16, fontSize: 12, marginTop: 2 },
+  logText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
+  footer: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: spacing.lg,
+  },
 });

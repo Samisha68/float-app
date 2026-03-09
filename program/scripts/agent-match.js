@@ -23,7 +23,9 @@ const {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const PROGRAM_ID       = new PublicKey("AeWSncwhRY2TyRnM7UByjhmmcgE8rrbMs9y8vwJomgmX");
-const USDC_MINT        = new PublicKey("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+const USDC_MINT        = new PublicKey(
+  process.env.LOAN_MINT || "7whbViYZqoGxZ7B32crtGEcyCJEDZNPrqSQxm9LUUtGX"
+);
 const MICRO_POOL_SEED  = Buffer.from("micro_pool");
 const MICRO_LOAN_SEED  = Buffer.from("micro_loan");
 const AGENT_CFG_SEED   = Buffer.from("agent_config");
@@ -51,7 +53,13 @@ async function sendAndConfirm(connection, tx, signers) {
   tx.sign(...signers);
   const skipPreflight = process.env.SKIP_PREFlight === "1";
   const sig = await connection.sendRawTransaction(tx.serialize(), { skipPreflight });
-  await connection.confirmTransaction({ signature: sig, blockhash, lastValidBlockHeight }, "confirmed");
+  const conf = await connection.confirmTransaction(
+    { signature: sig, blockhash, lastValidBlockHeight },
+    "confirmed"
+  );
+  if (conf.value.err) {
+    throw new Error(`Transaction ${sig} failed: ${JSON.stringify(conf.value.err)}`);
+  }
   return sig;
 }
 
@@ -122,6 +130,21 @@ async function main() {
   const borrowerCollateralAta = await ensureAta(connection, agentKp, borrowerKp.publicKey, USDC_MINT);
   const borrowerLoanAta       = borrowerCollateralAta; // same mint = same ATA in demo
   const vaultCollateralAta    = await ensureAta(connection, agentKp, microLoanPda, USDC_MINT);
+
+  // Borrower must have enough USDC for 110% collateral
+  const requiredCollateral = Math.ceil(amount * 1.1);
+  try {
+    const borrowerAtaInfo = await getAccount(connection, borrowerCollateralAta);
+    if (Number(borrowerAtaInfo.amount) < requiredCollateral) {
+      console.error(
+        `❌ Borrower balance too low (${Number(borrowerAtaInfo.amount) / 1e6} USDC < ${requiredCollateral / 1e6} USDC required).`
+      );
+      process.exit(1);
+    }
+  } catch {
+    console.error("❌ Could not read borrower collateral ATA balance.");
+    process.exit(1);
+  }
 
   // ── Build agent_match_loan instruction ────────────────────────────────────
   // args: amount (u64), term_days (u8), nonce (u64)

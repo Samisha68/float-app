@@ -852,7 +852,7 @@ pub struct AgentMatchLoan<'info> {
         seeds = [AGENT_CONFIG_SEED],
         bump,
     )]
-    pub agent_config: Account<'info, AgentConfig>,
+    pub agent_config: Box<Account<'info, AgentConfig>>,
 
     #[account(mut)]
     pub borrower: Signer<'info>,
@@ -864,35 +864,35 @@ pub struct AgentMatchLoan<'info> {
         seeds = [MICRO_LOAN_SEED, borrower.key().as_ref(), loan_mint.key().as_ref(), &nonce.to_le_bytes()],
         bump,
     )]
-    pub micro_loan: Account<'info, MicroLoan>,
+    pub micro_loan: Box<Account<'info, MicroLoan>>,
 
     #[account(
         mut,
         seeds = [MICRO_POOL_SEED],
         bump = pool_state.bump,
     )]
-    pub pool_state: Account<'info, PoolState>,
+    pub pool_state: Box<Account<'info, PoolState>>,
 
     #[account(
         mut,
         associated_token::mint = loan_mint,
         associated_token::authority = pool_state,
     )]
-    pub pool_loan_ata: Account<'info, TokenAccount>,
+    pub pool_loan_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         associated_token::mint = collateral_mint,
         associated_token::authority = borrower,
     )]
-    pub borrower_collateral_ata: Account<'info, TokenAccount>,
+    pub borrower_collateral_ata: Box<Account<'info, TokenAccount>>,
 
     #[account(
         mut,
         associated_token::mint = loan_mint,
         associated_token::authority = borrower,
     )]
-    pub borrower_loan_ata: Account<'info, TokenAccount>,
+    pub borrower_loan_ata: Box<Account<'info, TokenAccount>>,
 
     /// Vault ATA (authority = micro_loan PDA). Client must create before first use; or create via CPI in handler.
     #[account(
@@ -900,10 +900,10 @@ pub struct AgentMatchLoan<'info> {
         associated_token::mint = collateral_mint,
         associated_token::authority = micro_loan,
     )]
-    pub vault_collateral_ata: Account<'info, TokenAccount>,
+    pub vault_collateral_ata: Box<Account<'info, TokenAccount>>,
 
-    pub collateral_mint: Account<'info, Mint>,
-    pub loan_mint: Account<'info, Mint>,
+    pub collateral_mint: Box<Account<'info, Mint>>,
+    pub loan_mint: Box<Account<'info, Mint>>,
 
     pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
