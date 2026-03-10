@@ -1,402 +1,231 @@
-# Float — Collateral-backed Installment Loans on Solana
+# Float — AI-Native Micro-Lending on Solana
 
 > MONOLITH Solana Mobile Hackathon · March 2026
 
-**One-liner:** Float is collateral-backed installment loans on Solana — now with **AI-agent managed micro-lending** and a liquidity pool for autonomous yield.
+Float is a Solana mobile lending app with two lending modes:
 
-Float lets users lock SOL/USDC as collateral, receive a USDC loan, and repay it in fixed monthly installments (EMIs). Miss the grace period → collateral is liquidated. Repay fully → collateral returned.
+1. **Classic collateralized installment loans** (borrow, repay EMI, withdraw collateral)
+2. **AI-agent managed micro-loans** (pool-based liquidity, small short-term loans, autonomous matching)
 
-**AI innovation (hackathon):** Lenders deposit USDC into a shared micro-pool; an on-chain–authorized agent matches micro-loans ($1–$100, 1–7 days) with 110% mini-collateral. Set preferences (amount, APR, risk), human override (pause agent), caps ($100/loan, 10% pool exposure). The AI script now integrates **Solana Agent Kit** for live on-chain balance and liquidity signals, with the existing agent transaction flow kept on-chain.
-
----
-
-## Project Structure
-
-```
-Float/
-├── program/                  # Anchor smart contract
-│   ├── Anchor.toml
-│   ├── Cargo.toml
-│   ├── programs/float/
-│   │   ├── Cargo.toml
-│   │   └── src/lib.rs        # All instructions, state, errors
-│   └── tests/float.ts
-│
-└── app/                      # React Native + Expo frontend
-    ├── App.tsx               # Navigation root
-    ├── app.json
-    ├── package.json
-    └── src/
-        ├── idl/float.ts      # Anchor IDL (update after deploy)
-        ├── utils/
-        │   ├── constants.ts  # RPC, program ID, seeds
-        │   └── loanMath.ts   # EMI calculator, formatters
-        ├── hooks/
-        │   ├── useWallet.ts  # Mobile Wallet Adapter
-        │   └── useLoans.ts   # On-chain loan fetching
-        ├── components/
-        │   └── LoanCard.tsx
-        └── screens/
-            ├── HomeScreen.tsx
-            ├── CreateLoanScreen.tsx
-            ├── RepayScreen.tsx
-            └── HistoryScreen.tsx
-```
-
-**AI micro-lending:** New tab **AI** adds pool dashboard, deposit, agent preferences, agent status, and micro-loan repay. Hooks: `useMicroPool`, `useMicroLoans`. Full setup and 2‑min demo script: [docs/AI_MICRO_LENDING_SETUP.md](docs/AI_MICRO_LENDING_SETUP.md).
+The app is non-custodial, runs on Solana Devnet, and is built as a mobile-first Expo app with an Anchor program.
 
 ---
 
-## How It Works
+## What We Built
 
-| Step | Action | On-chain |
-|------|--------|----------|
-| 1 | User deposits 150 USDC collateral | `initialize_loan` — vault ATA receives collateral, treasury disburses USDC |
-| 2 | User receives 100 USDC loan | Treasury ATA → borrower ATA |
-| 3 | Monthly repayment | `repay_installment` — borrower ATA → treasury ATA |
-| 4 | All paid | Loan status → `Repaid` |
-| 5 | Withdraw collateral | `withdraw_collateral` — vault ATA → borrower ATA |
-| ⚠ | Missed payment + 7 days | `liquidate` — vault ATA → treasury ATA (anyone can call) |
+### 1) Classic loan engine (on-chain)
+- Borrower locks collateral (currently USDC in hackathon scope)
+- Protocol disburses USDC loan
+- Borrower repays monthly installments
+- Loan can be liquidated after grace period
+- Full repayment unlocks collateral withdrawal
 
-**LTV:** 150% collateral required (100 USDC loan needs 150 USDC collateral).
-**Interest:** Flat 12% APR calculated as: `(principal × rate × months/12) / 10000`.
-**No oracle:** Both collateral and loan use USDC on devnet for hackathon scope.
+Core instructions:
+- `initialize_loan`
+- `repay_installment`
+- `liquidate`
+- `withdraw_collateral`
 
----
+### 2) AI micro-lending engine (on-chain + agent)
+- Lenders deposit USDC to a shared micro-pool
+- Authorized agent matches micro-loans
+- Borrower posts **110% mini-collateral**
+- Loan caps:
+  - max `$100`
+  - max `10%` pool exposure per loan
+  - term `1-7` days
+- Borrower repays in full, then withdraws collateral
+- Overdue micro-loans can be liquidated to pool
 
-## Prerequisites
-
-```bash
-# Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup component add rustfmt
-
-# Solana CLI
-sh -c "$(curl -sSfL https://release.solana.com/stable/install)"
-
-# Anchor CLI
-cargo install --git https://github.com/coral-xyz/anchor avm --locked
-avm install 0.30.1
-avm use 0.30.1
-
-# Node / Yarn
-npm install -g yarn
-
-# Expo CLI
-npm install -g eas-cli expo-cli
-```
+Core instructions:
+- `initialize_micro_pool`
+- `initialize_agent_config`
+- `update_agent_config`
+- `deposit_to_pool`
+- `agent_match_loan`
+- `repay_micro_loan`
+- `withdraw_collateral_micro`
+- `liquidate_micro_loan`
 
 ---
 
-## 1 · Smart Contract Setup & Deployment
+## How We Utilized Solana App Kit (Mobile Stack)
 
-### 1.1 Generate a devnet keypair
+In Float, the “Solana App Kit” layer is implemented through Solana Mobile wallet integration and mobile-ready Solana runtime wiring.
 
-```bash
-solana-keygen new --outfile ~/.config/solana/id.json
-solana config set --url devnet
-solana airdrop 2
-```
+### Wallet and signing flow (Mobile Wallet Adapter)
+Using:
+- `@solana-mobile/mobile-wallet-adapter-protocol`
+- `@solana-mobile/mobile-wallet-adapter-protocol-web3js`
 
-### 1.2 Install program dependencies
+Implemented in [app/src/hooks/useWallet.ts](/Users/samisha/Projects/Float/app/src/hooks/useWallet.ts):
+- Authorize + silent reauthorize with app identity
+- Base64 MWA address conversion to `PublicKey`
+- Build transaction **before** wallet session
+- Simulate transaction before sign/send
+- Use `signTransactions` (not `signAndSendTransactions`) to avoid wallet-side timeout issues
+- Send signed raw transaction directly with `@solana/web3.js`
 
-```bash
-cd Float/program
-yarn install      # installs @coral-xyz/anchor for tests
-```
+### Solana/Anchor compatibility in React Native
+Implemented in:
+- [app/App.tsx](/Users/samisha/Projects/Float/app/App.tsx)
+- [app/metro.config.js](/Users/samisha/Projects/Float/app/metro.config.js)
 
-### 1.3 Build the program
+What we added:
+- Required polyfills (`Buffer`, URL, random values)
+- Metro aliases for Node built-ins needed by web3/Anchor
+- Safe stubs for non-mobile modules (`fs`, `net`, `tls`, etc.)
 
-```bash
-anchor build
-```
+### App-wide wallet actions
+- Central wallet context for connect/disconnect/sign in [app/src/context/WalletContext.tsx](/Users/samisha/Projects/Float/app/src/context/WalletContext.tsx)
+- Shared transaction signer used across all loan flows:
+  - create loan
+  - repay installment
+  - withdraw collateral
+  - initialize/deposit micro-pool
+  - execute agent-matched micro-loans
 
-This produces:
-- `target/deploy/float.so` — the compiled program
-- `target/idl/float.json` — the IDL
-- `target/types/float.ts` — TypeScript types
-
-### 1.4 Get the program ID
-
-```bash
-anchor keys list
-# float: <PROGRAM_ID>
-```
-
-Update **two places** with your actual program ID:
-
-```bash
-# program/Anchor.toml
-[programs.devnet]
-float = "<YOUR_PROGRAM_ID>"
-
-# program/programs/float/src/lib.rs  (top of file)
-declare_id!("<YOUR_PROGRAM_ID>");
-```
-
-Then rebuild:
-
-```bash
-anchor build
-```
-
-### 1.5 Deploy to devnet
-
-```bash
-anchor deploy --provider.cluster devnet
-```
-
-Expected output:
-```
-Deploying workspace: https://api.devnet.solana.com
-Upgrade authority: ~/.config/solana/id.json
-Deploying program "float"...
-Program Id: <YOUR_PROGRAM_ID>
-Deploy success
-```
-
-### 1.6 Seed the treasury with devnet USDC
-
-The treasury PDA needs USDC to disburse loans. For hackathon testing:
-
-```bash
-# Derive the treasury PDA address
-node -e "
-const anchor = require('@coral-xyz/anchor');
-const [pda] = anchor.web3.PublicKey.findProgramAddressSync(
-  [Buffer.from('treasury')],
-  new anchor.web3.PublicKey('<YOUR_PROGRAM_ID>')
-);
-console.log('Treasury PDA:', pda.toBase58());
-"
-
-# Get devnet USDC from Circle's faucet or use spl-token to mint test tokens
-# Devnet USDC mint: Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr
-spl-token create-account Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr \
-  --owner <TREASURY_PDA> \
-  --fee-payer ~/.config/solana/id.json
-```
-
-> **Tip for judging demo:** Create your own test SPL mint so you can freely airdrop tokens to the treasury and test wallets without needing the real devnet USDC faucet.
+### Solana mobile UX behavior
+- Detects native MWA availability
+- Provides mock-wallet fallback for Expo Go UI preview
+- Uses dev client / APK for real wallet signing on Android
 
 ---
 
-## 2 · Running Tests
+## How We Utilized Solana Agent Kit
 
-```bash
-cd Float/program
+Implemented in [program/scripts/ai-agent.js](/Users/samisha/Projects/Float/program/scripts/ai-agent.js).
 
-# Set localnet for fast testing (no rate limits)
-solana config set --url localhost
-solana-test-validator &   # start local validator
+Using:
+- `solana-agent-kit`
+- `@solana-agent-kit/plugin-token`
+- `@solana-agent-kit/plugin-misc`
 
-anchor test --skip-deploy   # runs tests/float.ts
-```
+### Agent architecture
+1. Initialize `SolanaAgentKit` with agent keypair wallet
+2. Register token + misc plugins
+3. Use AI tool-calling loop (OpenAI) with explicit loan-decision tools
+4. Gather on-chain signals before a decision:
+   - wallet age (RPC signatures history)
+   - borrower USDC balance (`get_balance_other`)
+   - pool liquidity (`get_balance_other`)
+5. Approve or reject
+6. If approved, execute on-chain `agent_match_loan`
 
-For devnet tests:
-
-```bash
-solana config set --url devnet
-anchor test
-```
+### Why Agent Kit is important here
+- Gives direct on-chain token signal access for decision-making
+- Keeps approval logic + execution tied to real Solana state
+- Enables a plugin-ready path for richer risk signals in future versions
 
 ---
 
-## 3 · Frontend Setup
+## System Architecture
 
-### 3.1 Update the program ID in the app
+- **Smart contract:** Anchor program in [program/programs/float/src/lib.rs](/Users/samisha/Projects/Float/program/programs/float/src/lib.rs)
+- **Mobile app:** React Native + Expo in [app](/Users/samisha/Projects/Float/app)
+- **Wallet integration:** Solana Mobile Wallet Adapter protocol
+- **AI executor:** Node script + Solana Agent Kit
+- **Network:** Solana Devnet
+- **Loan mint (demo):** Devnet USDC (`7whbViYZqoGxZ7B32crtGEcyCJEDZNPrqSQxm9LUUtGX`)
 
-After deploying, update `app/src/utils/constants.ts`:
+---
 
-```typescript
-export const FLOAT_PROGRAM_ID = new PublicKey("<YOUR_PROGRAM_ID>");
-```
+## Quick Start
 
-Also regenerate the IDL types if you made any contract changes:
+### Prerequisites
+- Solana CLI
+- Anchor CLI
+- Node.js 18+
+- Yarn or npm
+- Expo / EAS (for Android build)
 
+### 1) Build and deploy program
 ```bash
-# Copy generated types
-cp program/target/types/float.ts app/src/idl/float.ts
-```
-
-### 3.2 Install app dependencies
-
-```bash
-cd Float/app
+cd program
 yarn install
-```
-
-### 3.3 Run in Expo Go (quick preview)
-
-```bash
-yarn start
-# Scan QR code with Expo Go app
-```
-
-> Note: Mobile Wallet Adapter (MWA) only works on Android with a Solana wallet installed (e.g. Phantom, Solflare). Use a physical Android device or Android emulator with a wallet app installed.
-
-### 3.4 Build for Android (Solana dApp Store submission)
-
-```bash
-# Configure EAS
-eas build:configure
-
-# Build a development APK
-eas build --platform android --profile development
-
-# Build production APK for dApp Store
-eas build --platform android --profile production
-```
-
-`eas.json` example:
-```json
-{
-  "build": {
-    "development": {
-      "android": { "buildType": "apk", "gradleCommand": ":app:assembleDebug" }
-    },
-    "production": {
-      "android": { "buildType": "apk" }
-    }
-  }
-}
-```
-
----
-
-## 4 · Testing the Full Flow
-
-### 4.1 Manual walkthrough (devnet)
-
-1. **Fund test wallets** — airdrop SOL + USDC to your mobile wallet on devnet
-2. **Fund treasury** — mint/transfer USDC to the treasury PDA's ATA
-3. **Open Float app** → tap **Connect Wallet** → approve in Phantom/Solflare
-4. **Create Loan**:
-   - Enter loan amount (e.g. 100 USDC)
-   - Select term (3/6/12 months)
-   - Confirm the 150 USDC collateral requirement and $34.33/mo EMI
-   - Tap **Confirm Loan** → sign in wallet
-5. **Verify on-chain**:
-   ```bash
-   solana account <LOAN_PDA> --output json
-   ```
-6. **Repay EMI** → tap **Pay EMI** on home screen → sign
-7. **After all EMIs** → tap **Withdraw Collateral** → collateral returned
-
-### 4.2 Test liquidation path
-
-```bash
-# Simulate a missed payment by temporarily setting a past due date
-# (requires modifying the grace period in contract or using a test script)
-
-# Anyone can call liquidate once past due + 7 days:
-anchor run liquidate-test   # custom script in tests/
-```
-
-### 4.3 Verify accounts
-
-```bash
-# Check loan PDA state
-solana account <LOAN_PDA>
-
-# Check borrower USDC balance
-spl-token balance Gh9ZwEmdLJ8DscKNTkTqPbNwLNNBjuSzaG9Vp2KGtKJr
-
-# Check vault ATA (should be empty after collateral returned)
-spl-token accounts --owner <VAULT_PDA>
-```
-
----
-
-## 5 · Key Design Decisions
-
-### LTV (Loan-to-Value)
-Fixed at **150%** — no oracle required. For demo, collateral and loan use the same USDC mint. In production, collateral would be SOL/wBTC/etc. priced via Pyth.
-
-### EMI Formula (flat interest, mirrors on-chain)
-```
-total_interest = principal × annual_rate_bps × installments / 12 / 10_000
-EMI            = (principal + total_interest) / installments
-```
-
-Example: $100 loan, 6 months, 12% APR
-→ interest = $6.00 → EMI = $17.67/mo
-
-### PDA Architecture
-| PDA | Seeds | Purpose |
-|-----|-------|---------|
-| `loan` | `["loan", borrower, loan_mint]` | Stores all loan state |
-| `treasury` | `["treasury"]` | Signs USDC disbursements |
-| `vault` | `["vault", loan_pubkey]` | Holds collateral per loan |
-
-### Grace Period
-7 days after `next_due_timestamp`. Anyone can call `liquidate` — this is intentional (keeper-style liquidation).
-
----
-
-## 6 · Known Hackathon Limitations
-
-| Limitation | Production fix |
-|------------|---------------|
-| Single loan per borrower per mint | Add nonce to PDA seed |
-| No oracle for collateral pricing | Integrate Pyth Network |
-| Fixed 12% APR | Dynamic rates via governance |
-| Treasury needs manual seeding | Protocol fee accumulation |
-| No partial repayment | Add flexible repayment logic |
-| No liquidation incentive | Add liquidator bonus (e.g. 5% of collateral) |
-
----
-
-## 7 · Solana dApp Store Submission Checklist
-
-- [ ] Build production APK via `eas build --platform android --profile production`
-- [ ] Test on physical Android device with Phantom installed
-- [ ] Deploy program to **mainnet-beta** (update `Anchor.toml` + `constants.ts`)
-- [ ] Create dApp Store publisher account at `publish.solanamobile.com`
-- [ ] Upload APK, screenshots, and description
-- [ ] Set category: **DeFi**
-
----
-
-## 8 · Useful Commands Cheatsheet
-
-```bash
-# Build program
 anchor build
-
-# Deploy to devnet
 anchor deploy --provider.cluster devnet
+```
 
-# Run tests
-anchor test
+### 2) Run mobile app
+```bash
+cd app
+yarn install
+yarn start
+```
 
-# Start Expo
-cd app && yarn start
+For real MWA signing, build Android dev client / APK (Expo Go is UI-only fallback).
 
-# Check program logs (devnet)
-solana logs <PROGRAM_ID> --url devnet
+### 3) Run AI agent flow
+```bash
+cd program
+OPENAI_API_KEY=sk-... \
+AGENT_KEYPAIR=./demo-wallet.json \
+BORROWER=<borrower_pubkey> \
+AMOUNT=10000000 TERM_DAYS=3 NONCE=1 \
+node scripts/ai-agent.js
+```
 
-# Airdrop SOL (devnet)
-solana airdrop 2 <ADDRESS> --url devnet
+Detailed setup and demo steps:
+- [docs/AI_MICRO_LENDING_SETUP.md](/Users/samisha/Projects/Float/docs/AI_MICRO_LENDING_SETUP.md)
 
-# Get program ID
-anchor keys list
+---
+
+## Repo Structure
+
+```text
+Float/
+├── program/
+│   ├── programs/float/src/lib.rs         # Anchor program
+│   ├── scripts/ai-agent.js               # Solana Agent Kit powered agent
+│   └── tests/                            # Program tests/scripts
+├── app/
+│   ├── src/hooks/useWallet.ts            # Mobile wallet adapter integration
+│   ├── src/screens/AIPoolDashboardScreen.tsx
+│   ├── src/screens/AgentStatusScreen.tsx
+│   └── src/screens/RepayMicroScreen.tsx
+└── docs/
+    └── AI_MICRO_LENDING_SETUP.md
 ```
 
 ---
 
-## Tech Stack
+## Current Hackathon Constraints
 
-| Layer | Technology |
-|-------|-----------|
-| Smart Contract | Rust + Anchor 0.30.1 |
-| Token Program | SPL Token + Associated Token Account |
-| Frontend | React Native + Expo ~51 |
-| Wallet | Solana Mobile SDK — Mobile Wallet Adapter |
-| Navigation | React Navigation v6 (Stack + Bottom Tabs) |
-| Network | Solana Devnet (→ Mainnet for production) |
-| Loan Token | USDC (6 decimals) |
+- Devnet deployment only
+- Demo uses USDC for both collateral and loan in many flows
+- Agent preferences are currently local UI settings (not yet fully enforced on-chain)
+- Risk model is MVP rule-based + AI tool orchestration
 
 ---
 
-Built for the **MONOLITH Solana Mobile Hackathon** · Deadline March 9, 2026
+## Future Goals
+
+### Protocol roadmap
+- Integrate oracle-based collateral pricing (Pyth) for multi-asset collateral
+- Dynamic risk-based APR and borrower-specific limits
+- Partial repayments and refinance flows
+- Liquidator incentives and keeper network
+- Move from single-pool MVP to segmented risk tranches
+
+### Agent roadmap
+- Production policy engine with deterministic guardrails
+- Expanded Solana Agent Kit plugin signals (activity, reputation, volatility)
+- On-chain verifiable decision proofs / audit logs
+- Multi-agent strategy marketplace (lender-selectable agents)
+
+### Mobile + product roadmap
+- Mainnet launch with dApp Store distribution
+- Better lender analytics (APY, defaults, utilization)
+- Notification + automation loops for due dates and pool health
+- Safer key-management and role-separated agent ops
+
+---
+
+## Pitch
+
+Float turns a Solana mobile wallet into a mini-bank:
+- borrowers get fast collateral-backed liquidity,
+- lenders earn from pooled micro-credit,
+- and AI agents automate matching with on-chain risk checks.
+
